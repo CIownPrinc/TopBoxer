@@ -7,19 +7,13 @@ interface RoundOverlayProps {
 }
 
 export function RoundOverlay({ state, onRestart }: RoundOverlayProps) {
-  const [visible, setVisible] = useState(false);
   const [animKey, setAnimKey] = useState(0);
 
   useEffect(() => {
     if (state.phase === "countdown" || state.phase === "round-end" || state.phase === "game-over") {
-      setVisible(true);
       setAnimKey((k) => k + 1);
-    } else {
-      setVisible(false);
     }
   }, [state.phase, state.round]);
-
-  if (!visible) return null;
 
   if (state.phase === "countdown") {
     return (
@@ -28,10 +22,7 @@ export function RoundOverlay({ state, onRestart }: RoundOverlayProps) {
         style={{ background: "rgba(0,0,0,0.55)" }}
       >
         <div className="text-center">
-          <div
-            className="text-sm font-bold uppercase tracking-widest mb-4"
-            style={{ color: "rgba(255,255,255,0.5)" }}
-          >
+          <div className="text-sm font-bold uppercase tracking-widest mb-4" style={{ color: "rgba(255,255,255,0.45)" }}>
             Round {state.round}
           </div>
           <div
@@ -48,7 +39,7 @@ export function RoundOverlay({ state, onRestart }: RoundOverlayProps) {
               lineHeight: 1,
             }}
           >
-            {state.countdownValue === 0 ? "FIGHT!" : state.countdownValue}
+            {state.countdownValue <= 0 ? "FIGHT!" : state.countdownValue}
           </div>
         </div>
       </div>
@@ -56,14 +47,12 @@ export function RoundOverlay({ state, onRestart }: RoundOverlayProps) {
   }
 
   if (state.phase === "round-end") {
-    const isKO = state.knockedOut !== null;
-    const playerWonRound =
-      isKO ? state.knockedOut === "ai" : state.roundsWon.player > state.roundsWon.ai - (state.roundsWon.ai > 0 ? 0 : 0);
+    const isKO = state.knockedDown !== null;
 
     return (
       <div
         className="absolute inset-0 flex items-center justify-center z-25"
-        style={{ background: "rgba(0,0,0,0.7)" }}
+        style={{ background: "rgba(0,0,0,0.75)" }}
       >
         <div className="text-center">
           {isKO ? (
@@ -72,22 +61,22 @@ export function RoundOverlay({ state, onRestart }: RoundOverlayProps) {
                 key={animKey}
                 className="ko-slam font-black"
                 style={{
-                  fontSize: 110,
+                  fontSize: 100,
                   fontFamily: "monospace",
                   color: "#fff",
                   textShadow: "0 0 30px #fff, 0 0 60px #ff4a17",
                   letterSpacing: 8,
                 }}
               >
-                KO!
+                {state.knockdownCount[state.knockedDown!] >= 3 ? "TKO!" : "KO!"}
               </div>
               <div
                 className="text-lg font-bold uppercase tracking-widest mt-2"
-                style={{
-                  color: state.knockedOut === "ai" ? "#4a90ff" : "#ef4444",
-                }}
+                style={{ color: state.knockedDown === "ai" ? "#4a90ff" : "#ef4444" }}
               >
-                {state.knockedOut === "ai" ? "You knocked out CPU!" : "CPU knocked you out!"}
+                {state.knockedDown === "ai"
+                  ? `You knocked out the CPU${state.knockdownCount.ai >= 3 ? " (TKO)" : ""}!`
+                  : `CPU knocked you out${state.knockdownCount.player >= 3 ? " (TKO)" : ""}!`}
               </div>
             </>
           ) : (
@@ -98,34 +87,26 @@ export function RoundOverlay({ state, onRestart }: RoundOverlayProps) {
               >
                 Round Over
               </div>
-              <div
-                className="text-base mt-2"
-                style={{ color: "rgba(255,255,255,0.6)" }}
-              >
-                Judge's decision...
+              <div className="text-base mt-2" style={{ color: "rgba(255,255,255,0.55)" }}>
+                Judge's scorecard...
               </div>
             </>
           )}
-          <div className="mt-6 flex gap-8 justify-center">
-            <div className="text-center">
-              <div className="text-xs uppercase tracking-widest" style={{ color: "rgba(255,255,255,0.4)" }}>
-                You
+
+          <div className="flex gap-8 justify-center mt-6">
+            {(["player", "ai"] as const).map((who) => (
+              <div key={who} className="text-center">
+                <div className="text-xs uppercase tracking-widest mb-1" style={{ color: "rgba(255,255,255,0.35)" }}>
+                  {who === "player" ? "You" : "CPU"}
+                </div>
+                <div
+                  className="text-4xl font-black"
+                  style={{ color: who === "player" ? "#4a90ff" : "#ef4444", fontFamily: "monospace" }}
+                >
+                  {state.roundsWon[who]}
+                </div>
               </div>
-              <div className="text-4xl font-black" style={{ color: "#4a90ff", fontFamily: "monospace" }}>
-                {state.roundsWon.player}
-              </div>
-            </div>
-            <div className="text-3xl font-black self-center" style={{ color: "rgba(255,255,255,0.3)" }}>
-              —
-            </div>
-            <div className="text-center">
-              <div className="text-xs uppercase tracking-widest" style={{ color: "rgba(255,255,255,0.4)" }}>
-                CPU
-              </div>
-              <div className="text-4xl font-black" style={{ color: "#ef4444", fontFamily: "monospace" }}>
-                {state.roundsWon.ai}
-              </div>
-            </div>
+            ))}
           </div>
         </div>
       </div>
@@ -137,14 +118,14 @@ export function RoundOverlay({ state, onRestart }: RoundOverlayProps) {
     return (
       <div
         className="absolute inset-0 flex items-center justify-center z-30"
-        style={{ background: "rgba(0,0,0,0.88)" }}
+        style={{ background: "rgba(0,0,0,0.9)" }}
       >
         <div className="text-center px-8 max-w-sm">
           <div
             key={animKey}
             className="ko-slam font-black mb-4"
             style={{
-              fontSize: 70,
+              fontSize: 68,
               fontFamily: "monospace",
               color: playerWon ? "#ffd700" : "#ef4444",
               textShadow: playerWon
@@ -156,40 +137,24 @@ export function RoundOverlay({ state, onRestart }: RoundOverlayProps) {
           >
             {playerWon ? "YOU WIN!" : "KO'd!"}
           </div>
-          <div
-            className="text-base mb-2"
-            style={{ color: "rgba(255,255,255,0.6)" }}
-          >
+          <div className="text-base mb-2" style={{ color: "rgba(255,255,255,0.55)" }}>
             {playerWon
-              ? "Outstanding performance! You dominated the ring."
-              : "The CPU was too strong. Try again!"}
+              ? "Outstanding! You dominated the ring."
+              : "The CPU was too strong. Train harder!"}
           </div>
+
+          {/* Score */}
           <div className="flex gap-6 justify-center mt-4 mb-8">
             <div className="text-center">
-              <div className="text-xs uppercase tracking-widest" style={{ color: "rgba(255,255,255,0.4)" }}>
-                You
-              </div>
-              <div
-                className="text-5xl font-black"
-                style={{ color: "#4a90ff", fontFamily: "monospace" }}
-              >
+              <div className="text-xs uppercase tracking-widest mb-1" style={{ color: "rgba(255,255,255,0.35)" }}>You</div>
+              <div className="text-5xl font-black" style={{ color: "#4a90ff", fontFamily: "monospace" }}>
                 {state.roundsWon.player}
               </div>
             </div>
-            <div
-              className="text-4xl font-black self-center"
-              style={{ color: "rgba(255,255,255,0.3)" }}
-            >
-              —
-            </div>
+            <div className="text-4xl font-black self-center" style={{ color: "rgba(255,255,255,0.25)" }}>—</div>
             <div className="text-center">
-              <div className="text-xs uppercase tracking-widest" style={{ color: "rgba(255,255,255,0.4)" }}>
-                CPU
-              </div>
-              <div
-                className="text-5xl font-black"
-                style={{ color: "#ef4444", fontFamily: "monospace" }}
-              >
+              <div className="text-xs uppercase tracking-widest mb-1" style={{ color: "rgba(255,255,255,0.35)" }}>CPU</div>
+              <div className="text-5xl font-black" style={{ color: "#ef4444", fontFamily: "monospace" }}>
                 {state.roundsWon.ai}
               </div>
             </div>

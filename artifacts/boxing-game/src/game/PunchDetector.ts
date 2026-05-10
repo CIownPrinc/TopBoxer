@@ -1,39 +1,51 @@
 import type { NormalizedLandmark } from "@mediapipe/tasks-vision";
 
-export type PunchType = "jab" | "hook" | "uppercut" | "block";
+export type PunchType = "jab" | "hook" | "uppercut";
 
 export interface PunchEvent {
   hand: "left" | "right";
   type: PunchType;
-  force: number; // 0-1
+  force: number; // 0–1
   timestamp: number;
 }
 
 interface FrameData {
   wrist: { x: number; y: number };
-  indexTip: { x: number; y: number };
   ts: number;
 }
 
-const HISTORY_SIZE = 8;
-const PUNCH_COOLDOWN_MS = 400;
-const VELOCITY_THRESHOLD = 0.018; // normalized units per ms * 10
-const BLOCK_Y_THRESHOLD = 0.4; // wrist above this y (0=top) = blocking
+// ─── Tuning constants ────────────────────────────────────────────────────────
+const HISTORY_SIZE = 10;
+const PUNCH_COOLDOWN_MS = 700;   // ms between punches per hand
+// scaledSpeed = (Δpos / Δt_ms) * 1000  → units/sec
+// Natural tremor ≈ 0.05–0.15 u/s; real punch ≈ 0.4–2.0 u/s
+const VELOCITY_THRESHOLD = 0.28;  // require clear intentional motion
+const MIN_TRAVEL = 0.04;          // wrist must travel ≥4 % of frame width
+const FORCE_NORM = 1.5;           // scaledSpeed at which force = 1.0
+// Block: both wrists above this y in normalised coords (0 = top)
+const BLOCK_Y = 0.42;
+// ─────────────────────────────────────────────────────────────────────────────
 
 export class PunchDetector {
-  private leftHistory: FrameData[] = [];
-  private rightHistory: FrameData[] = [];
-  private lastPunchLeft = 0;
-  private lastPunchRight = 0;
-  private callbacks: Array<(e: PunchEvent) => void> = [];
+  private leftHist: FrameData[] = [];
+  private rightHist: FrameData[] = [];
+  private lastPunchL = 0;
+  private lastPunchR = 0;
   private blockState = { left: false, right: false };
+  private handsVisible = { left: false, right: false };
+  private callbacks: Array<(e: PunchEvent) => void> = [];
 
   onPunch(cb: (e: PunchEvent) => void): void {
     this.callbacks.push(cb);
   }
 
-  getBlockState(): { left: boolean; right: boolean } {
-    return { ...this.blockState };
+  /** Returns true when both hands have been seen this frame */
+  getBothHandsVisible(): boolean {
+    return this.handsVisible.left && this.handsVisible.right;
+  }
+
+  isBlocking(): boolean {
+    return this.blockState.left && this.blockState.right;
   }
 
   update(
@@ -41,85 +53,79 @@ export class PunchDetector {
     right: NormalizedLandmark[] | null
   ): void {
     const now = performance.now();
-    if (left) this.updateHand("left", left, now);
-    if (right) this.updateHand("right", right, now);
+    this.handsVisible.left = left !== null;
+    this.handsVisible.right = right !== null;
 
-    // Update block state
-    this.blockState.left = left ? left[0].y < BLOCK_Y_THRESHOLD : false;
-    this.blockState.right = right ? right[0].y < BLOCK_Y_THRESHOLD : false;
+    if (left) this.processHand("left", left, now);
+    if (right) this.processHand("right", right, now);
+
+    // Block: wrist above face level on both hands
+    this.blockState.left = left ? left[0].y < BLOCK_Y : false;
+    this.blockState.right = right ? right[0].y < BLOCK_Y : false;
   }
 
-  private updateHand(
+  private processHand(
     hand: "left" | "right",
-    landmarks: NormalizedLandmark[],
+    lm: NormalizedLandmark[],
     now: number
   ): void {
-    const wrist = landmarks[0];
-    const indexTip = landmarks[8];
-    const frame: FrameData = {
-      wrist: { x: wrist.x, y: wrist.y },
-      indexTip: { x: indexTip.x, y: indexTip.y },
-      ts: now,
-    };
+    const hist = hand === "left" ? this.leftHist : this.rightHist;
+    hist.push({ wrist: { x: lm[0].x, y: lm[0].y }, ts: now });
+    if (hist.length > HISTORY_SIZE) hist.shift();
+    if (hist.length < 4) return;
 
-    const history = hand === "left" ? this.leftHistory : this.rightHistory;
-    history.push(frame);
-    if (history.length > HISTORY_SIZE) history.shift();
+    const cooldownTs = hand === "left" ? this.lastPunchL : this.lastPunchR;
+    if (now - cooldownTs < PUNCH_COOLDOWN_MS) return;
 
-    if (history.length < 3) return;
-
-    const cooldown =
-      hand === "left" ? this.lastPunchLeft : this.lastPunchRight;
-    if (now - cooldown < PUNCH_COOLDOWN_MS) return;
-
-    this.detectPunch(hand, history, now);
+    this.tryDetect(hand, hist, now);
   }
 
-  private detectPunch(
+  private tryDetect(
     hand: "left" | "right",
-    history: FrameData[],
+    hist: FrameData[],
     now: number
   ): void {
-    if (history.length < 3) return;
-
-    const recent = history.slice(-4);
-    const oldest = recent[0];
-    const newest = recent[recent.length - 1];
+    // Use the most recent 5 frames for velocity computation
+    const window = hist.slice(-5);
+    const oldest = window[0];
+    const newest = window[window.length - 1];
     const dt = newest.ts - oldest.ts;
     if (dt <= 0) return;
 
-    const dx = (newest.wrist.x - oldest.wrist.x) / dt;
-    const dy = (newest.wrist.y - oldest.wrist.y) / dt;
-    const speed = Math.sqrt(dx * dx + dy * dy);
-    const scaledSpeed = speed * 1000; // per second
+    const rawDx = newest.wrist.x - oldest.wrist.x;
+    const rawDy = newest.wrist.y - oldest.wrist.y;
+    const travel = Math.sqrt(rawDx * rawDx + rawDy * rawDy);
 
+    // Gate 1: minimum real-world travel distance
+    if (travel < MIN_TRAVEL) return;
+
+    const vx = rawDx / dt;
+    const vy = rawDy / dt;
+    const speed = Math.sqrt(vx * vx + vy * vy);
+    const scaledSpeed = speed * 1000; // convert to units/sec
+
+    // Gate 2: minimum velocity
     if (scaledSpeed < VELOCITY_THRESHOLD) return;
 
-    // Determine punch type from direction
-    const absDx = Math.abs(dx);
-    const absDy = Math.abs(dy);
+    // Classify punch by dominant axis
+    const absVx = Math.abs(vx);
+    const absVy = Math.abs(vy);
     let type: PunchType;
-
-    if (absDy > absDx * 1.5 && dy < 0) {
-      type = "jab"; // upward = forward punch
-    } else if (absDy > absDx * 1.5 && dy > 0) {
-      type = "uppercut";
-    } else if (absDx > absDy) {
-      type = "hook"; // horizontal sweep
+    if (absVy > absVx * 1.4 && vy < 0) {
+      type = "jab";       // upward → forward
+    } else if (absVy > absVx * 1.4 && vy > 0) {
+      type = "uppercut";  // downward (scooping up)
     } else {
-      type = "jab";
+      type = "hook";      // horizontal sweep
     }
 
-    const force = Math.min(1, scaledSpeed / 0.12);
+    const force = Math.min(1, scaledSpeed / FORCE_NORM);
 
-    const event: PunchEvent = { hand, type, force, timestamp: now };
-    if (hand === "left") this.lastPunchLeft = now;
-    else this.lastPunchRight = now;
+    if (hand === "left") this.lastPunchL = now;
+    else this.lastPunchR = now;
 
-    this.callbacks.forEach((cb) => cb(event));
-  }
-
-  isBlocking(): boolean {
-    return this.blockState.left && this.blockState.right;
+    this.callbacks.forEach((cb) =>
+      cb({ hand, type, force, timestamp: now })
+    );
   }
 }

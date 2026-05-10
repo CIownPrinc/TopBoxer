@@ -8,6 +8,7 @@ import type { GameState } from "../game/GameEngine";
 import { HUD } from "./HUD";
 import { StartScreen } from "./StartScreen";
 import { RoundOverlay } from "./RoundOverlay";
+import { TutorialScreen } from "./TutorialScreen";
 import type { NormalizedLandmark } from "@mediapipe/tasks-vision";
 
 interface HandOverlayDot {
@@ -15,6 +16,8 @@ interface HandOverlayDot {
   y: number;
   hand: "left" | "right";
 }
+
+type ShakeLevel = "" | "shake-sm" | "shake-md" | "shake-lg";
 
 export function GameCanvas() {
   const gameCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -34,27 +37,34 @@ export function GameCanvas() {
     aiHealth: 100,
     timeLeft: 60,
     roundsWon: { player: 0, ai: 0 },
-    knockedOut: null,
+    knockedDown: null,
+    knockdownCount: { player: 0, ai: 0 },
+    eightCount: 8,
     winner: null,
     countdownValue: 3,
     isPlayerBlocking: false,
     isAIBlocking: false,
-    lastPunchInfo: "",
+    lastPunchType: null,
+    lastPunchForce: 0,
+    lastPunchTs: 0,
     comboCount: 0,
+    tutorialStep: 0,
   });
 
   const [cameraReady, setCameraReady] = useState(false);
   const [trackingReady, setTrackingReady] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [handDots, setHandDots] = useState<HandOverlayDot[]>([]);
+  const [bothHandsVisible, setBothHandsVisible] = useState(false);
+  const [shakeClass, setShakeClass] = useState<ShakeLevel>("");
+  const shakeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Initialize scene (3D or 2D fallback)
+  // ── Scene init ──────────────────────────────────────────────────────────────
   useEffect(() => {
     const canvas = gameCanvasRef.current;
     const container = containerRef.current;
     if (!canvas || !container) return;
 
-    // Set canvas size to fill container
     canvas.width = container.clientWidth;
     canvas.height = container.clientHeight;
 
@@ -69,29 +79,38 @@ export function GameCanvas() {
       scene.resize(container.clientWidth, container.clientHeight);
     };
     window.addEventListener("resize", handleResize);
-
     return () => {
       window.removeEventListener("resize", handleResize);
       scene.dispose();
     };
   }, []);
 
-  // Initialize game engine
+  // ── Camera shake helper ─────────────────────────────────────────────────────
+  const triggerShake = useCallback((force: number) => {
+    const level: ShakeLevel =
+      force >= 0.85 ? "shake-lg" : force >= 0.55 ? "shake-md" : "shake-sm";
+    setShakeClass(level);
+    if (shakeTimerRef.current) clearTimeout(shakeTimerRef.current);
+    shakeTimerRef.current = setTimeout(() => setShakeClass(""), 600);
+  }, []);
+
+  // ── Game engine ─────────────────────────────────────────────────────────────
   useEffect(() => {
     const engine = new GameEngine();
     engine.onState(setGameState);
-    engine.onHit((target) => {
+    engine.onHit((target, force) => {
       if (target === "ai") sceneRef.current?.triggerAIHit();
-      else sceneRef.current?.triggerPlayerHit();
+      else {
+        sceneRef.current?.triggerPlayerHit();
+        triggerShake(force);
+      }
     });
-    engine.setAIPunchCallback((hand) => {
-      sceneRef.current?.triggerAIPunch(hand);
-    });
+    engine.setAIPunchCallback((hand) => sceneRef.current?.triggerAIPunch(hand));
     engineRef.current = engine;
     return () => engine.reset();
-  }, []);
+  }, [triggerShake]);
 
-  // Initialize hand tracker + punch detector
+  // ── Hand tracker + punch detector ───────────────────────────────────────────
   useEffect(() => {
     const tracker = new HandTracker();
     const detector = new PunchDetector();
@@ -106,22 +125,14 @@ export function GameCanvas() {
     tracker.onTrack((data) => {
       detector.update(data.left, data.right);
       engineRef.current?.setPlayerBlocking(detector.isBlocking());
+      setBothHandsVisible(detector.getBothHandsVisible());
 
-      // Build overlay dots for key landmarks
+      // Overlay dots for webcam preview
       const dots: HandOverlayDot[] = [];
-      const addDots = (
-        landmarks: NormalizedLandmark[] | null,
-        hand: "left" | "right"
-      ) => {
-        if (!landmarks) return;
+      const addDots = (lm: NormalizedLandmark[] | null, hand: "left" | "right") => {
+        if (!lm) return;
         [0, 4, 8, 12, 16, 20].forEach((i) => {
-          if (landmarks[i]) {
-            dots.push({
-              x: (1 - landmarks[i].x) * 100,
-              y: landmarks[i].y * 100,
-              hand,
-            });
-          }
+          if (lm[i]) dots.push({ x: (1 - lm[i].x) * 100, y: lm[i].y * 100, hand });
         });
       };
       addDots(data.left, "left");
@@ -129,12 +140,20 @@ export function GameCanvas() {
       setHandDots(dots);
     });
 
-    return () => {
-      tracker.stopCamera();
-      tracker.stopTracking();
-    };
+    return () => { tracker.stopCamera(); tracker.stopTracking(); };
   }, []);
 
+  // ── KO / knockdown sync to scene ────────────────────────────────────────────
+  useEffect(() => {
+    if (gameState.knockedDown === "player") sceneRef.current?.setPlayerKO(true);
+    if (gameState.knockedDown === "ai") sceneRef.current?.setAIKO(true);
+    if (gameState.phase === "countdown" || gameState.phase === "fighting") {
+      sceneRef.current?.setPlayerKO(false);
+      sceneRef.current?.setAIKO(false);
+    }
+  }, [gameState.knockedDown, gameState.phase]);
+
+  // ── Handlers ────────────────────────────────────────────────────────────────
   const handleSetupCamera = useCallback(async () => {
     const engine = engineRef.current;
     const tracker = trackerRef.current;
@@ -144,6 +163,7 @@ export function GameCanvas() {
     setCameraError(null);
     setCameraReady(false);
     setTrackingReady(false);
+    setBothHandsVisible(false);
 
     try {
       const trackerInit = tracker.init().then(() => setTrackingReady(true));
@@ -167,34 +187,46 @@ export function GameCanvas() {
     sceneRef.current?.setAIKO(false);
   }, []);
 
+  const handleStartTutorial = useCallback(() => {
+    engineRef.current?.startTutorial();
+  }, []);
+
+  const handleAdvanceTutorial = useCallback(() => {
+    const state = engineRef.current?.getState();
+    if (!state) return;
+    if (state.tutorialStep >= 4) {
+      // Last step done → start the match
+      engineRef.current?.startMatch();
+      sceneRef.current?.setPlayerKO(false);
+      sceneRef.current?.setAIKO(false);
+    } else {
+      engineRef.current?.advanceTutorial();
+    }
+  }, []);
+
+  const handleSkipTutorial = useCallback(() => {
+    handleStartMatch();
+  }, [handleStartMatch]);
+
   const handleRestart = useCallback(() => {
     engineRef.current?.reset();
     sceneRef.current?.setPlayerKO(false);
     sceneRef.current?.setAIKO(false);
   }, []);
 
-  // Sync KO state to scene
-  useEffect(() => {
-    if (gameState.knockedOut === "player") sceneRef.current?.setPlayerKO(true);
-    if (gameState.knockedOut === "ai") sceneRef.current?.setAIKO(true);
-    if (gameState.phase === "countdown") {
-      sceneRef.current?.setPlayerKO(false);
-      sceneRef.current?.setAIKO(false);
-    }
-  }, [gameState.knockedOut, gameState.phase]);
-
-  const showStart =
-    gameState.phase === "start" || gameState.phase === "camera-setup";
-  const showHUD =
-    gameState.phase === "fighting" || gameState.phase === "round-end";
+  // ── Derived display flags ───────────────────────────────────────────────────
+  const showStart = gameState.phase === "start" || gameState.phase === "camera-setup";
+  const showTutorial = gameState.phase === "tutorial";
+  const showHUD = ["fighting", "knockdown", "round-end"].includes(gameState.phase);
+  const showWebcam = gameState.phase !== "start";
 
   return (
     <div
       ref={containerRef}
-      className="relative w-full h-full overflow-hidden"
+      className={`relative w-full h-full overflow-hidden ${shakeClass}`}
       style={{ background: "#0a0a14" }}
     >
-      {/* Game canvas (3D WebGL or 2D fallback) */}
+      {/* Game canvas */}
       <canvas
         ref={gameCanvasRef}
         data-testid="canvas-game"
@@ -202,25 +234,40 @@ export function GameCanvas() {
         style={{ display: "block" }}
       />
 
-      {/* HUD overlay */}
+      {/* HUD */}
       {showHUD && <HUD state={gameState} />}
 
       {/* Round / countdown / KO / game-over overlays */}
       <RoundOverlay state={gameState} onRestart={handleRestart} />
 
-      {/* Start & camera setup screens */}
+      {/* Tutorial */}
+      {showTutorial && (
+        <TutorialScreen
+          step={gameState.tutorialStep}
+          bothHandsVisible={bothHandsVisible}
+          lastPunchType={gameState.lastPunchType}
+          lastPunchTs={gameState.lastPunchTs}
+          isBlocking={gameState.isPlayerBlocking}
+          onAdvance={handleAdvanceTutorial}
+          onSkip={handleSkipTutorial}
+        />
+      )}
+
+      {/* Start / camera setup */}
       {showStart && (
         <StartScreen
           phase={gameState.phase as "start" | "camera-setup"}
           onSetupCamera={handleSetupCamera}
           onStart={handleStartMatch}
+          onTutorial={handleStartTutorial}
           cameraReady={cameraReady}
           trackingReady={trackingReady}
           cameraError={cameraError}
+          bothHandsVisible={bothHandsVisible}
         />
       )}
 
-      {/* Webcam preview */}
+      {/* Webcam preview (bottom-left) */}
       <div
         className="absolute z-20"
         style={{
@@ -230,9 +277,14 @@ export function GameCanvas() {
           height: 120,
           borderRadius: 8,
           overflow: "hidden",
-          border: "2px solid rgba(74,144,255,0.5)",
-          boxShadow: "0 0 12px rgba(74,144,255,0.3)",
-          display: gameState.phase === "start" ? "none" : "block",
+          border: bothHandsVisible
+            ? "2px solid rgba(34,197,94,0.7)"
+            : "2px solid rgba(74,144,255,0.5)",
+          boxShadow: bothHandsVisible
+            ? "0 0 12px rgba(34,197,94,0.4)"
+            : "0 0 12px rgba(74,144,255,0.3)",
+          display: showWebcam ? "block" : "none",
+          transition: "border-color 0.3s, box-shadow 0.3s",
         }}
       >
         <video
@@ -244,7 +296,7 @@ export function GameCanvas() {
           style={{ transform: "scaleX(-1)" }}
           data-testid="video-webcam"
         />
-        {/* Hand tracking dot overlay */}
+        {/* Hand tracking dots */}
         <div className="absolute inset-0 pointer-events-none">
           {handDots.map((dot, i) => (
             <div
@@ -261,9 +313,12 @@ export function GameCanvas() {
         </div>
         <div
           className="absolute bottom-1 left-0 right-0 text-center text-xs font-bold"
-          style={{ color: "#4a90ff", letterSpacing: 2 }}
+          style={{
+            color: bothHandsVisible ? "#22c55e" : "#4a90ff",
+            letterSpacing: 2,
+          }}
         >
-          YOU
+          {bothHandsVisible ? "✓ READY" : "YOU"}
         </div>
       </div>
     </div>
