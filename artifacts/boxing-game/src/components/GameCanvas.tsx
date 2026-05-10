@@ -19,15 +19,116 @@ interface HandOverlayDot {
 
 type ShakeLevel = "" | "shake-sm" | "shake-md" | "shake-lg";
 
+// ── ReadyCheck overlay — "raise both fists" gate before fight ─────────────────
+function ReadyCheckOverlay({
+  bothHandsVisible,
+  onSkip,
+}: {
+  bothHandsVisible: boolean;
+  onSkip: () => void;
+}) {
+  return (
+    <div
+      className="absolute inset-0 flex items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.88)", zIndex: 30 }}
+    >
+      <div className="text-center px-8 max-w-sm">
+        <div
+          className="font-black mb-4"
+          style={{
+            fontFamily: "monospace",
+            fontSize: 48,
+            letterSpacing: 4,
+            color: bothHandsVisible ? "#22c55e" : "#fff",
+            textShadow: bothHandsVisible ? "0 0 20px #22c55e" : undefined,
+            transition: "color 0.3s, text-shadow 0.3s",
+          }}
+        >
+          {bothHandsVisible ? "✊ READY! ✊" : "✊ GET READY ✊"}
+        </div>
+
+        <p className="text-sm mb-8" style={{ color: "rgba(255,255,255,0.5)", lineHeight: 1.7 }}>
+          {bothHandsVisible
+            ? "Starting countdown…"
+            : "Raise both fists in front of the camera to begin the fight."}
+        </p>
+
+        {/* Live hand detection dots */}
+        <div className="flex justify-center gap-6 mb-8">
+          {(["Left fist", "Right fist"] as const).map((label, i) => {
+            const detected = i === 0 ? bothHandsVisible : bothHandsVisible;
+            // We show both green or both grey based on combined state
+            return (
+              <div key={label} className="text-center">
+                <div
+                  style={{
+                    width: 52,
+                    height: 52,
+                    borderRadius: "50%",
+                    border: `3px solid ${bothHandsVisible ? "#22c55e" : "rgba(255,255,255,0.2)"}`,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: 24,
+                    margin: "0 auto 8px",
+                    background: bothHandsVisible ? "rgba(34,197,94,0.15)" : "transparent",
+                    boxShadow: bothHandsVisible ? "0 0 16px rgba(34,197,94,0.5)" : "none",
+                    transition: "all 0.3s",
+                  }}
+                >
+                  ✊
+                </div>
+                <div
+                  className="text-xs"
+                  style={{ color: bothHandsVisible ? "#22c55e" : "rgba(255,255,255,0.3)" }}
+                >
+                  {label}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {!bothHandsVisible && (
+          <div
+            className="step-glow inline-block px-5 py-2 rounded-lg text-sm font-bold mb-6"
+            style={{
+              border: "1px solid rgba(74,144,255,0.4)",
+              color: "rgba(74,144,255,0.8)",
+              background: "rgba(74,144,255,0.08)",
+            }}
+          >
+            Hold both fists up to the camera
+          </div>
+        )}
+
+        <br />
+        <button
+          onClick={onSkip}
+          className="text-xs mt-4"
+          style={{
+            color: "rgba(255,255,255,0.25)",
+            background: "none",
+            border: "none",
+            cursor: "pointer",
+          }}
+        >
+          Skip hands check →
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function GameCanvas() {
   const gameCanvasRef = useRef<HTMLCanvasElement>(null);
-  const webcamRef = useRef<HTMLVideoElement>(null);
+  const webcamRef    = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const trackerRef = useRef<HandTracker | null>(null);
+  const trackerRef  = useRef<HandTracker | null>(null);
   const detectorRef = useRef<PunchDetector | null>(null);
-  const sceneRef = useRef<IScene | null>(null);
-  const engineRef = useRef<GameEngine | null>(null);
+  const sceneRef    = useRef<IScene | null>(null);
+  const engineRef   = useRef<GameEngine | null>(null);
 
   const [gameState, setGameState] = useState<GameState>({
     phase: "start",
@@ -51,21 +152,35 @@ export function GameCanvas() {
     tutorialStep: 0,
   });
 
-  const [cameraReady, setCameraReady] = useState(false);
+  const [cameraReady, setCameraReady]     = useState(false);
   const [trackingReady, setTrackingReady] = useState(false);
-  const [cameraError, setCameraError] = useState<string | null>(null);
-  const [handDots, setHandDots] = useState<HandOverlayDot[]>([]);
+  const [cameraError, setCameraError]     = useState<string | null>(null);
+  const [handDots, setHandDots]           = useState<HandOverlayDot[]>([]);
   const [bothHandsVisible, setBothHandsVisible] = useState(false);
-  const [shakeClass, setShakeClass] = useState<ShakeLevel>("");
+  const [shakeClass, setShakeClass]       = useState<ShakeLevel>("");
+  const [readyCheck, setReadyCheck]       = useState(false); // "raise fists" gate
   const shakeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ── Scene init ──────────────────────────────────────────────────────────────
+  // ── Auto-advance from readyCheck when both hands visible ──────────────────
   useEffect(() => {
-    const canvas = gameCanvasRef.current;
+    if (!readyCheck || !bothHandsVisible) return;
+    // Small debounce so the "READY!" flash is visible
+    const t = setTimeout(() => {
+      setReadyCheck(false);
+      engineRef.current?.startMatch();
+      sceneRef.current?.setPlayerKO(false);
+      sceneRef.current?.setAIKO(false);
+    }, 600);
+    return () => clearTimeout(t);
+  }, [readyCheck, bothHandsVisible]);
+
+  // ── Scene ─────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const canvas    = gameCanvasRef.current;
     const container = containerRef.current;
     if (!canvas || !container) return;
 
-    canvas.width = container.clientWidth;
+    canvas.width  = container.clientWidth;
     canvas.height = container.clientHeight;
 
     const scene = createScene(canvas);
@@ -74,18 +189,15 @@ export function GameCanvas() {
 
     const handleResize = () => {
       if (!container) return;
-      canvas.width = container.clientWidth;
+      canvas.width  = container.clientWidth;
       canvas.height = container.clientHeight;
       scene.resize(container.clientWidth, container.clientHeight);
     };
     window.addEventListener("resize", handleResize);
-    return () => {
-      window.removeEventListener("resize", handleResize);
-      scene.dispose();
-    };
+    return () => { window.removeEventListener("resize", handleResize); scene.dispose(); };
   }, []);
 
-  // ── Camera shake helper ─────────────────────────────────────────────────────
+  // ── Camera shake ──────────────────────────────────────────────────────────
   const triggerShake = useCallback((force: number) => {
     const level: ShakeLevel =
       force >= 0.85 ? "shake-lg" : force >= 0.55 ? "shake-md" : "shake-sm";
@@ -94,27 +206,24 @@ export function GameCanvas() {
     shakeTimerRef.current = setTimeout(() => setShakeClass(""), 600);
   }, []);
 
-  // ── Game engine ─────────────────────────────────────────────────────────────
+  // ── Game engine ───────────────────────────────────────────────────────────
   useEffect(() => {
     const engine = new GameEngine();
     engine.onState(setGameState);
     engine.onHit((target, force) => {
       if (target === "ai") sceneRef.current?.triggerAIHit();
-      else {
-        sceneRef.current?.triggerPlayerHit();
-        triggerShake(force);
-      }
+      else { sceneRef.current?.triggerPlayerHit(); triggerShake(force); }
     });
     engine.setAIPunchCallback((hand) => sceneRef.current?.triggerAIPunch(hand));
     engineRef.current = engine;
     return () => engine.reset();
   }, [triggerShake]);
 
-  // ── Hand tracker + punch detector ───────────────────────────────────────────
+  // ── Hand tracker + punch detector ─────────────────────────────────────────
   useEffect(() => {
-    const tracker = new HandTracker();
+    const tracker  = new HandTracker();
     const detector = new PunchDetector();
-    trackerRef.current = tracker;
+    trackerRef.current  = tracker;
     detectorRef.current = detector;
 
     detector.onPunch((event) => {
@@ -127,7 +236,6 @@ export function GameCanvas() {
       engineRef.current?.setPlayerBlocking(detector.isBlocking());
       setBothHandsVisible(detector.getBothHandsVisible());
 
-      // Overlay dots for webcam preview
       const dots: HandOverlayDot[] = [];
       const addDots = (lm: NormalizedLandmark[] | null, hand: "left" | "right") => {
         if (!lm) return;
@@ -143,19 +251,19 @@ export function GameCanvas() {
     return () => { tracker.stopCamera(); tracker.stopTracking(); };
   }, []);
 
-  // ── KO / knockdown sync to scene ────────────────────────────────────────────
+  // ── KO sync ───────────────────────────────────────────────────────────────
   useEffect(() => {
     if (gameState.knockedDown === "player") sceneRef.current?.setPlayerKO(true);
-    if (gameState.knockedDown === "ai") sceneRef.current?.setAIKO(true);
+    if (gameState.knockedDown === "ai")     sceneRef.current?.setAIKO(true);
     if (gameState.phase === "countdown" || gameState.phase === "fighting") {
       sceneRef.current?.setPlayerKO(false);
       sceneRef.current?.setAIKO(false);
     }
   }, [gameState.knockedDown, gameState.phase]);
 
-  // ── Handlers ────────────────────────────────────────────────────────────────
+  // ── Handlers ──────────────────────────────────────────────────────────────
   const handleSetupCamera = useCallback(async () => {
-    const engine = engineRef.current;
+    const engine  = engineRef.current;
     const tracker = trackerRef.current;
     if (!engine || !tracker || !webcamRef.current) return;
 
@@ -181,7 +289,14 @@ export function GameCanvas() {
     }
   }, []);
 
-  const handleStartMatch = useCallback(() => {
+  // FIGHT button → show "raise fists" gate, then auto-start
+  const handleFightClick = useCallback(() => {
+    setReadyCheck(true);
+  }, []);
+
+  // Skip the fists check and go straight to countdown
+  const handleSkipReadyCheck = useCallback(() => {
+    setReadyCheck(false);
     engineRef.current?.startMatch();
     sceneRef.current?.setPlayerKO(false);
     sceneRef.current?.setAIKO(false);
@@ -195,30 +310,32 @@ export function GameCanvas() {
     const state = engineRef.current?.getState();
     if (!state) return;
     if (state.tutorialStep >= 4) {
-      // Last step done → start the match
-      engineRef.current?.startMatch();
-      sceneRef.current?.setPlayerKO(false);
-      sceneRef.current?.setAIKO(false);
+      // Tutorial complete → ready check then fight
+      setReadyCheck(true);
     } else {
       engineRef.current?.advanceTutorial();
     }
   }, []);
 
   const handleSkipTutorial = useCallback(() => {
-    handleStartMatch();
-  }, [handleStartMatch]);
+    handleSkipReadyCheck();
+  }, [handleSkipReadyCheck]);
 
   const handleRestart = useCallback(() => {
+    setReadyCheck(false);
     engineRef.current?.reset();
+    // Camera is already running — skip back to camera-setup, not start screen
+    engineRef.current?.startCameraSetup();
     sceneRef.current?.setPlayerKO(false);
     sceneRef.current?.setAIKO(false);
   }, []);
 
-  // ── Derived display flags ───────────────────────────────────────────────────
-  const showStart = gameState.phase === "start" || gameState.phase === "camera-setup";
-  const showTutorial = gameState.phase === "tutorial";
-  const showHUD = ["fighting", "knockdown", "round-end"].includes(gameState.phase);
-  const showWebcam = gameState.phase !== "start";
+  // ── Derived flags ─────────────────────────────────────────────────────────
+  // Don't show start screen once readyCheck is active (fight/tutorial chose their path)
+  const showStart    = (gameState.phase === "start" || gameState.phase === "camera-setup") && !readyCheck;
+  const showTutorial = gameState.phase === "tutorial" && !readyCheck;
+  const showHUD      = ["fighting", "knockdown", "round-end"].includes(gameState.phase);
+  const showWebcam   = gameState.phase !== "start";
 
   return (
     <div
@@ -237,7 +354,7 @@ export function GameCanvas() {
       {/* HUD */}
       {showHUD && <HUD state={gameState} />}
 
-      {/* Round / countdown / KO / game-over overlays */}
+      {/* Round / countdown / KO / game-over */}
       <RoundOverlay state={gameState} onRestart={handleRestart} />
 
       {/* Tutorial */}
@@ -253,12 +370,20 @@ export function GameCanvas() {
         />
       )}
 
-      {/* Start / camera setup */}
+      {/* "Raise both fists" gate — shown after clicking FIGHT or finishing tutorial */}
+      {readyCheck && !showTutorial && (
+        <ReadyCheckOverlay
+          bothHandsVisible={bothHandsVisible}
+          onSkip={handleSkipReadyCheck}
+        />
+      )}
+
+      {/* Start / camera-setup */}
       {showStart && (
         <StartScreen
           phase={gameState.phase as "start" | "camera-setup"}
           onSetupCamera={handleSetupCamera}
-          onStart={handleStartMatch}
+          onStart={handleFightClick}
           onTutorial={handleStartTutorial}
           cameraReady={cameraReady}
           trackingReady={trackingReady}
@@ -267,7 +392,7 @@ export function GameCanvas() {
         />
       )}
 
-      {/* Webcam preview (bottom-left) */}
+      {/* Webcam preview */}
       <div
         className="absolute z-20"
         style={{
@@ -275,14 +400,14 @@ export function GameCanvas() {
           left: 16,
           width: 160,
           height: 120,
-          borderRadius: 8,
+          borderRadius: 10,
           overflow: "hidden",
           border: bothHandsVisible
             ? "2px solid rgba(34,197,94,0.7)"
-            : "2px solid rgba(74,144,255,0.5)",
+            : "2px solid rgba(74,144,255,0.4)",
           boxShadow: bothHandsVisible
-            ? "0 0 12px rgba(34,197,94,0.4)"
-            : "0 0 12px rgba(74,144,255,0.3)",
+            ? "0 0 14px rgba(34,197,94,0.4)"
+            : "0 0 10px rgba(74,144,255,0.25)",
           display: showWebcam ? "block" : "none",
           transition: "border-color 0.3s, box-shadow 0.3s",
         }}
@@ -312,13 +437,14 @@ export function GameCanvas() {
           ))}
         </div>
         <div
-          className="absolute bottom-1 left-0 right-0 text-center text-xs font-bold"
+          className="absolute bottom-1 left-0 right-0 text-center font-bold"
           style={{
-            color: bothHandsVisible ? "#22c55e" : "#4a90ff",
+            fontSize: 9,
             letterSpacing: 2,
+            color: bothHandsVisible ? "#22c55e" : "#4a90ffaa",
           }}
         >
-          {bothHandsVisible ? "✓ READY" : "YOU"}
+          {bothHandsVisible ? "✓ FISTS READY" : "YOU"}
         </div>
       </div>
     </div>

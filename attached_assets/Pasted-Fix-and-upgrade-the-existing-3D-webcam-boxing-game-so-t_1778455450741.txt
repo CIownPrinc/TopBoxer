@@ -1,0 +1,89 @@
+Fix and upgrade the existing 3D webcam boxing game so that hand tracking reliably detects combat actions (jab, hook, block, charge) in real time without jitter, false positives, or missed inputs.
+
+Primary Goal
+
+Make hand tracking robust enough that gameplay feels consistent and responsive during fast movement.
+
+Core Problem to Solve
+
+The current system struggles with:
+
+Inconsistent punch detection during fast movement
+Jabs not being distinguished from normal hand motion
+“Charge” attacks not reliably triggering
+Hand jitter causing false hits or missed hits
+No clear separation between gesture detection and game actions
+Required Solution Architecture
+
+Refactor the input system into a 3-layer pipeline:
+
+1. Raw Tracking Layer
+
+Use MediaPipe / TensorFlow.js hand tracking to capture:
+
+Wrist position (primary)
+Index knuckle position (for direction inference)
+Velocity of hand movement (calculated per frame)
+
+Apply:
+
+Smoothing (moving average or exponential smoothing)
+Frame-to-frame velocity calculation
+Noise filtering threshold (ignore micro-movements)
+2. Gesture Recognition Layer (IMPORTANT)
+
+Convert raw motion into explicit combat states.
+
+Define clear rules:
+
+JAB
+Fast forward movement along Z-axis (toward camera/opponent)
+Velocity exceeds threshold in short time window (<300ms)
+Minimal lateral movement
+HOOK
+Fast lateral arc movement (X-axis dominant)
+Curved trajectory detected over short time window
+BLOCK
+Hand raised above chest/head height AND low velocity
+CHARGE ATTACK
+Hand pulled back (negative Z direction) for >500ms
+Followed by rapid forward motion (velocity spike)
+
+👉 Implement a state machine per hand, not one-off detection.
+
+3. Game Action Layer
+
+Map recognized gestures to game actions:
+
+Jab → light punch
+Hook → medium damage punch
+Charge → heavy attack (requires wind-up + cooldown)
+Block → reduces incoming damage
+
+Add:
+
+Cooldowns per action to prevent spam
+Hit validation window (only register hit during punch “active frames”)
+Debounce logic to avoid double triggers
+Critical Improvements Required
+Replace any direct “if movement > threshold then punch” logic
+Add temporal tracking (must analyze motion over time, not single frames)
+Add confidence scoring for gestures
+Ensure gestures require BOTH direction + speed + timing conditions
+Add debug overlay showing:
+Hand velocity vector
+Detected gesture state
+Confidence level
+Performance Requirements
+Must run at 30–60 FPS in browser
+Tracking must not lag gameplay input
+No blocking operations in render loop
+Gameplay Quality Goals
+Jabs feel instant and responsive
+Hooks feel intentional and require motion arc
+Charge attacks feel powerful but predictable
+No accidental punches from small hand movements
+Blocking reliably reduces damage when hand is raised
+Output Requirement
+
+Refactor the existing codebase to implement this architecture cleanly. Prioritize correctness of gesture detection over adding new features.
