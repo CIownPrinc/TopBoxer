@@ -1,45 +1,90 @@
+/**
+ * Layers 2 & 3 — Gesture Recognition + Game Action
+ *
+ * Per-hand state machine:
+ *   IDLE → COCKING → PUNCHING → COOLDOWN → IDLE
+ *        ↘ PUNCHING (direct jab/hook from IDLE)
+ *
+ * Gestures:
+ *   JAB    – fast upward (Y-negative) motion from IDLE
+ *   HOOK   – fast lateral (X-dominant) motion from IDLE
+ *   UPPERCUT – fast downward (Y-positive) motion from IDLE
+ *   CHARGE – wind-up (vy positive, slow) → fast forward release
+ *   BLOCK  – both wrists above face level, low velocity
+ */
 import type { NormalizedLandmark } from "@mediapipe/tasks-vision";
+import { HandSmoother } from "./HandSmoother";
+import type { SmoothedFrame, Vec3 } from "./HandSmoother";
 
-export type PunchType = "jab" | "hook" | "uppercut";
+// ── Exported types ──────────────────────────────────────────────────────────
+export type PunchType = "jab" | "hook" | "uppercut" | "charge";
 
 export interface PunchEvent {
   hand: "left" | "right";
   type: PunchType;
-  force: number; // 0–1
+  force: number;       // 0–1 (normalised from velocity)
+  confidence: number;  // 0–1 (gesture classification confidence)
   timestamp: number;
 }
 
-interface FrameData {
-  wrist: { x: number; y: number };
-  ts: number;
+export type HandState = "idle" | "cocking" | "punching" | "cooldown";
+
+export interface HandDebugInfo {
+  state: HandState;
+  speed: number;
+  vel: Vec3;
+  lastGesture: PunchType | "block" | "idle" | "cocking";
+  confidence: number;
+  blocking: boolean;
 }
 
-// ─── Tuning constants ────────────────────────────────────────────────────────
-const HISTORY_SIZE = 10;
-const PUNCH_COOLDOWN_MS = 700;   // ms between punches per hand
-// scaledSpeed = (Δpos / Δt_ms) * 1000  → units/sec
-// Natural tremor ≈ 0.05–0.15 u/s; real punch ≈ 0.4–2.0 u/s
-const VELOCITY_THRESHOLD = 0.28;  // require clear intentional motion
-const MIN_TRAVEL = 0.04;          // wrist must travel ≥4 % of frame width
-const FORCE_NORM = 1.5;           // scaledSpeed at which force = 1.0
-// Block: both wrists above this y in normalised coords (0 = top)
-const BLOCK_Y = 0.42;
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Tuning constants ────────────────────────────────────────────────────────
+/** Below this speed: ignore (natural tremor) */
+const NOISE_THRESH    = 0.08;
+/** Minimum speed for a direct punch from idle */
+const PUNCH_THRESH    = 0.28;
+/** Minimum speed to enter cocking state (wind-up) */
+const COCK_THRESH     = 0.10;
+/** Minimum speed to release a charge attack */
+const CHARGE_THRESH   = 0.32;
+/** Minimum ms spent cocking before a charge is accepted */
+const COCK_MIN_MS     = 180;
+/** If still cocking after this many ms with no release → reset */
+const COCK_MAX_MS     = 850;
+/** How long the PUNCHING state lasts (active frames) */
+const PUNCH_WIN_MS    = 220;
+/** How long to stay in COOLDOWN before returning to IDLE */
+const COOLDOWN_MS     = 620;
+/** Wrist y-value above which both hands = blocking (0 = top) */
+const BLOCK_Y         = 0.42;
+/** Normalised speed that maps to force = 1.0 */
+const FORCE_NORM      = 1.4;
+/** Primary axis must represent at least this fraction of speed */
+const DIR_CONFIDENCE  = 0.52;
+/** Minimum classification confidence to emit a punch event */
+const EMIT_THRESHOLD  = 0.42;
+// ───────────────────────────────────────────────────────────────────────────
+
+interface PerHand {
+  smoother: HandSmoother;
+  state: HandState;
+  stateTs: number;
+  lastPunchTs: number;
+  debug: HandDebugInfo;
+}
 
 export class PunchDetector {
-  private leftHist: FrameData[] = [];
-  private rightHist: FrameData[] = [];
-  private lastPunchL = 0;
-  private lastPunchR = 0;
-  private blockState = { left: false, right: false };
-  private handsVisible = { left: false, right: false };
+  private hands: { left: PerHand; right: PerHand } = {
+    left:  this.makeHand(),
+    right: this.makeHand(),
+  };
+  private blockState    = { left: false, right: false };
+  private handsVisible  = { left: false, right: false };
   private callbacks: Array<(e: PunchEvent) => void> = [];
 
-  onPunch(cb: (e: PunchEvent) => void): void {
-    this.callbacks.push(cb);
-  }
+  // ── Public API ─────────────────────────────────────────────────────────────
+  onPunch(cb: (e: PunchEvent) => void): void { this.callbacks.push(cb); }
 
-  /** Returns true when both hands have been seen this frame */
   getBothHandsVisible(): boolean {
     return this.handsVisible.left && this.handsVisible.right;
   }
@@ -48,84 +93,219 @@ export class PunchDetector {
     return this.blockState.left && this.blockState.right;
   }
 
+  getDebugInfo(): { left: HandDebugInfo; right: HandDebugInfo } {
+    return { left: { ...this.hands.left.debug }, right: { ...this.hands.right.debug } };
+  }
+
   update(
-    left: NormalizedLandmark[] | null,
+    left:  NormalizedLandmark[] | null,
     right: NormalizedLandmark[] | null
   ): void {
     const now = performance.now();
-    this.handsVisible.left = left !== null;
+    this.handsVisible.left  = left  !== null;
     this.handsVisible.right = right !== null;
 
-    if (left) this.processHand("left", left, now);
+    if (left)  this.processHand("left",  left,  now);
+    else       this.resetHand("left");
     if (right) this.processHand("right", right, now);
+    else       this.resetHand("right");
 
-    // Block: wrist above face level on both hands
-    this.blockState.left = left ? left[0].y < BLOCK_Y : false;
+    this.blockState.left  = left  ? left[0].y  < BLOCK_Y : false;
     this.blockState.right = right ? right[0].y < BLOCK_Y : false;
+
+    this.hands.left.debug.blocking  = this.blockState.left;
+    this.hands.right.debug.blocking = this.blockState.right;
   }
 
+  // ── State machine ──────────────────────────────────────────────────────────
   private processHand(
-    hand: "left" | "right",
+    side: "left" | "right",
     lm: NormalizedLandmark[],
     now: number
   ): void {
-    const hist = hand === "left" ? this.leftHist : this.rightHist;
-    hist.push({ wrist: { x: lm[0].x, y: lm[0].y }, ts: now });
-    if (hist.length > HISTORY_SIZE) hist.shift();
-    if (hist.length < 4) return;
+    const h = this.hands[side];
+    const frame = h.smoother.update(lm, now);
+    const stateAge = now - h.stateTs;
 
-    const cooldownTs = hand === "left" ? this.lastPunchL : this.lastPunchR;
-    if (now - cooldownTs < PUNCH_COOLDOWN_MS) return;
+    // Update debug
+    h.debug.speed = frame.speed;
+    h.debug.vel   = frame.vel;
+    h.debug.state = h.state;
 
-    this.tryDetect(hand, hist, now);
-  }
-
-  private tryDetect(
-    hand: "left" | "right",
-    hist: FrameData[],
-    now: number
-  ): void {
-    // Use the most recent 5 frames for velocity computation
-    const window = hist.slice(-5);
-    const oldest = window[0];
-    const newest = window[window.length - 1];
-    const dt = newest.ts - oldest.ts;
-    if (dt <= 0) return;
-
-    const rawDx = newest.wrist.x - oldest.wrist.x;
-    const rawDy = newest.wrist.y - oldest.wrist.y;
-    const travel = Math.sqrt(rawDx * rawDx + rawDy * rawDy);
-
-    // Gate 1: minimum real-world travel distance
-    if (travel < MIN_TRAVEL) return;
-
-    const vx = rawDx / dt;
-    const vy = rawDy / dt;
-    const speed = Math.sqrt(vx * vx + vy * vy);
-    const scaledSpeed = speed * 1000; // convert to units/sec
-
-    // Gate 2: minimum velocity
-    if (scaledSpeed < VELOCITY_THRESHOLD) return;
-
-    // Classify punch by dominant axis
-    const absVx = Math.abs(vx);
-    const absVy = Math.abs(vy);
-    let type: PunchType;
-    if (absVy > absVx * 1.4 && vy < 0) {
-      type = "jab";       // upward → forward
-    } else if (absVy > absVx * 1.4 && vy > 0) {
-      type = "uppercut";  // downward (scooping up)
-    } else {
-      type = "hook";      // horizontal sweep
+    switch (h.state) {
+      case "idle":     this.fromIdle(side, h, frame, now);         break;
+      case "cocking":  this.fromCocking(side, h, frame, stateAge, now); break;
+      case "punching": if (stateAge > PUNCH_WIN_MS) this.go(h, "cooldown", now); break;
+      case "cooldown": if (stateAge > COOLDOWN_MS)  this.go(h, "idle",     now); break;
     }
 
-    const force = Math.min(1, scaledSpeed / FORCE_NORM);
+    h.debug.state = h.state;
+  }
 
-    if (hand === "left") this.lastPunchL = now;
-    else this.lastPunchR = now;
+  private fromIdle(
+    side: "left" | "right",
+    h: PerHand,
+    frame: SmoothedFrame,
+    now: number
+  ): void {
+    const { speed, vel } = frame;
+    if (speed < NOISE_THRESH) {
+      h.debug.lastGesture = "idle";
+      return;
+    }
 
-    this.callbacks.forEach((cb) =>
-      cb({ hand, type, force, timestamp: now })
-    );
+    const absVx = Math.abs(vel.x);
+    const absVy = Math.abs(vel.y);
+
+    // Slow backward motion → start charging
+    if (
+      vel.y > COCK_THRESH &&           // moving down (toward waist = wind-up)
+      speed < PUNCH_THRESH * 0.9 &&    // not fast enough to be a punch yet
+      vel.y > absVx * 0.7              // mostly vertical
+    ) {
+      this.go(h, "cocking", now);
+      h.debug.lastGesture = "cocking";
+      h.debug.confidence  = 0;
+      return;
+    }
+
+    // Fast motion → classify and emit punch
+    if (speed >= PUNCH_THRESH) {
+      const { type, confidence } = this.classify(frame);
+      if (confidence >= EMIT_THRESHOLD && now - h.lastPunchTs >= COOLDOWN_MS) {
+        this.emit(side, h, type, speed, confidence, now);
+      }
+    }
+  }
+
+  private fromCocking(
+    side: "left" | "right",
+    h: PerHand,
+    frame: SmoothedFrame,
+    stateAge: number,
+    now: number
+  ): void {
+    h.debug.lastGesture = "cocking";
+    h.debug.confidence  = Math.min(1, stateAge / COCK_MIN_MS);
+
+    // Timeout without release → reset
+    if (stateAge > COCK_MAX_MS) {
+      this.go(h, "idle", now);
+      return;
+    }
+
+    // Release: fast forward (Y-negative = upward) after sufficient wind-up
+    const { speed, vel } = frame;
+    const forwardSpeed = Math.max(0, -vel.y);
+    if (
+      stateAge >= COCK_MIN_MS &&
+      forwardSpeed >= CHARGE_THRESH &&
+      speed >= CHARGE_THRESH
+    ) {
+      const rawForce = Math.min(1, speed / (FORCE_NORM * 0.65));
+      // Charge damage multiplied by up to 1.5×
+      const force = Math.min(1, rawForce * 1.45);
+      this.emitEvent({
+        hand: side,
+        type: "charge",
+        force,
+        confidence: 0.92,
+        timestamp: now,
+      });
+      h.lastPunchTs = now;
+      h.debug.lastGesture = "charge";
+      h.debug.confidence  = 0.92;
+      this.go(h, "punching", now);
+    }
+  }
+
+  /** Classify a fast motion into JAB / HOOK / UPPERCUT */
+  private classify(frame: SmoothedFrame): { type: PunchType; confidence: number } {
+    const { vel, speed } = frame;
+    if (speed < 0.001) return { type: "jab", confidence: 0 };
+
+    const absVx = Math.abs(vel.x);
+    const absVy = Math.abs(vel.y);
+    const fwdFrac   = Math.max(0, -vel.y) / speed; // Y-neg = forward
+    const backFrac  = Math.max(0, vel.y)  / speed; // Y-pos = downward
+    const latFrac   = absVx / speed;
+
+    let type: PunchType;
+    let dirConf: number;
+
+    if (latFrac > DIR_CONFIDENCE && latFrac >= fwdFrac * 1.1) {
+      // Lateral dominant → hook
+      type    = "hook";
+      dirConf = latFrac;
+    } else if (backFrac > DIR_CONFIDENCE && backFrac > fwdFrac && backFrac > latFrac) {
+      // Downward dominant → uppercut (fast version of the cocking motion)
+      type    = "uppercut";
+      dirConf = backFrac;
+    } else {
+      // Default: upward/forward → jab
+      type    = "jab";
+      dirConf = Math.max(fwdFrac, 0.5); // jab is the fallback; give generous confidence
+    }
+
+    // Speed confidence: how far above the threshold?
+    const speedConf = Math.min(1, (speed - PUNCH_THRESH) / PUNCH_THRESH + 0.5);
+    // Geometric mean so both axes must be good
+    const confidence = Math.sqrt(dirConf * speedConf);
+    return { type, confidence };
+  }
+
+  private emit(
+    side: "left" | "right",
+    h: PerHand,
+    type: PunchType,
+    speed: number,
+    confidence: number,
+    now: number
+  ): void {
+    const force = Math.min(1, speed / FORCE_NORM);
+    this.emitEvent({ hand: side, type, force, confidence, timestamp: now });
+    h.lastPunchTs       = now;
+    h.debug.lastGesture = type;
+    h.debug.confidence  = confidence;
+    this.go(h, "punching", now);
+  }
+
+  private emitEvent(event: PunchEvent): void {
+    this.callbacks.forEach((cb) => cb(event));
+  }
+
+  private go(h: PerHand, state: HandState, now: number): void {
+    h.state   = state;
+    h.stateTs = now;
+  }
+
+  private resetHand(side: "left" | "right"): void {
+    const h = this.hands[side];
+    h.smoother.reset();
+    h.state     = "idle";
+    h.stateTs   = 0;
+    h.debug.speed = 0;
+    h.debug.vel   = { x: 0, y: 0, z: 0 };
+    h.debug.state = "idle";
+    h.debug.lastGesture = "idle";
+    h.debug.confidence  = 0;
+    h.debug.blocking    = false;
+  }
+
+  private makeHand(): PerHand {
+    return {
+      smoother: new HandSmoother(),
+      state:    "idle",
+      stateTs:  0,
+      lastPunchTs: 0,
+      debug: {
+        state: "idle",
+        speed: 0,
+        vel:   { x: 0, y: 0, z: 0 },
+        lastGesture: "idle",
+        confidence: 0,
+        blocking: false,
+      },
+    };
   }
 }

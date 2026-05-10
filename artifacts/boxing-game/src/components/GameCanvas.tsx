@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { HandTracker } from "../game/HandTracker";
 import { PunchDetector } from "../game/PunchDetector";
+import type { HandDebugInfo } from "../game/PunchDetector";
 import { createScene } from "../game/SceneManager";
 import type { IScene } from "../game/SceneManager";
 import { GameEngine } from "../game/GameEngine";
@@ -9,24 +10,22 @@ import { HUD } from "./HUD";
 import { StartScreen } from "./StartScreen";
 import { RoundOverlay } from "./RoundOverlay";
 import { TutorialScreen } from "./TutorialScreen";
+import { DebugOverlay } from "./DebugOverlay";
 import type { NormalizedLandmark } from "@mediapipe/tasks-vision";
 
-interface HandOverlayDot {
-  x: number;
-  y: number;
-  hand: "left" | "right";
-}
-
+interface HandOverlayDot { x: number; y: number; hand: "left" | "right" }
 type ShakeLevel = "" | "shake-sm" | "shake-md" | "shake-lg";
 
-// ── ReadyCheck overlay — "raise both fists" gate before fight ─────────────────
+const EMPTY_DEBUG: HandDebugInfo = {
+  state: "idle", speed: 0, vel: { x: 0, y: 0, z: 0 },
+  lastGesture: "idle", confidence: 0, blocking: false,
+};
+
+// ── Ready-check overlay ────────────────────────────────────────────────────────
 function ReadyCheckOverlay({
   bothHandsVisible,
   onSkip,
-}: {
-  bothHandsVisible: boolean;
-  onSkip: () => void;
-}) {
+}: { bothHandsVisible: boolean; onSkip: () => void }) {
   return (
     <div
       className="absolute inset-0 flex items-center justify-center"
@@ -34,64 +33,45 @@ function ReadyCheckOverlay({
     >
       <div className="text-center px-8 max-w-sm">
         <div
-          className="font-black mb-4"
+          className="font-black mb-4 transition-colors duration-300"
           style={{
             fontFamily: "monospace",
-            fontSize: 48,
+            fontSize: 44,
             letterSpacing: 4,
             color: bothHandsVisible ? "#22c55e" : "#fff",
             textShadow: bothHandsVisible ? "0 0 20px #22c55e" : undefined,
-            transition: "color 0.3s, text-shadow 0.3s",
           }}
         >
           {bothHandsVisible ? "✊ READY! ✊" : "✊ GET READY ✊"}
         </div>
-
-        <p className="text-sm mb-8" style={{ color: "rgba(255,255,255,0.5)", lineHeight: 1.7 }}>
+        <p className="text-sm mb-8" style={{ color: "rgba(255,255,255,0.45)", lineHeight: 1.7 }}>
           {bothHandsVisible
             ? "Starting countdown…"
-            : "Raise both fists in front of the camera to begin the fight."}
+            : "Raise both fists in front of the camera to begin."}
         </p>
-
-        {/* Live hand detection dots */}
-        <div className="flex justify-center gap-6 mb-8">
-          {(["Left fist", "Right fist"] as const).map((label, i) => {
-            const detected = i === 0 ? bothHandsVisible : bothHandsVisible;
-            // We show both green or both grey based on combined state
-            return (
-              <div key={label} className="text-center">
-                <div
-                  style={{
-                    width: 52,
-                    height: 52,
-                    borderRadius: "50%",
-                    border: `3px solid ${bothHandsVisible ? "#22c55e" : "rgba(255,255,255,0.2)"}`,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    fontSize: 24,
-                    margin: "0 auto 8px",
-                    background: bothHandsVisible ? "rgba(34,197,94,0.15)" : "transparent",
-                    boxShadow: bothHandsVisible ? "0 0 16px rgba(34,197,94,0.5)" : "none",
-                    transition: "all 0.3s",
-                  }}
-                >
-                  ✊
-                </div>
-                <div
-                  className="text-xs"
-                  style={{ color: bothHandsVisible ? "#22c55e" : "rgba(255,255,255,0.3)" }}
-                >
-                  {label}
-                </div>
+        <div className="flex justify-center gap-8 mb-8">
+          {["Left fist", "Right fist"].map((label) => (
+            <div key={label} className="text-center">
+              <div
+                style={{
+                  width: 52, height: 52, borderRadius: "50%",
+                  border: `3px solid ${bothHandsVisible ? "#22c55e" : "rgba(255,255,255,0.18)"}`,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 24, margin: "0 auto 8px",
+                  background: bothHandsVisible ? "rgba(34,197,94,0.15)" : "transparent",
+                  boxShadow: bothHandsVisible ? "0 0 14px rgba(34,197,94,0.5)" : "none",
+                  transition: "all 0.3s",
+                }}
+              >✊</div>
+              <div className="text-xs" style={{ color: bothHandsVisible ? "#22c55e" : "rgba(255,255,255,0.3)" }}>
+                {label}
               </div>
-            );
-          })}
+            </div>
+          ))}
         </div>
-
         {!bothHandsVisible && (
           <div
-            className="step-glow inline-block px-5 py-2 rounded-lg text-sm font-bold mb-6"
+            className={`step-glow inline-block px-5 py-2 rounded-lg text-sm font-bold mb-4`}
             style={{
               border: "1px solid rgba(74,144,255,0.4)",
               color: "rgba(74,144,255,0.8)",
@@ -101,17 +81,10 @@ function ReadyCheckOverlay({
             Hold both fists up to the camera
           </div>
         )}
-
         <br />
         <button
           onClick={onSkip}
-          className="text-xs mt-4"
-          style={{
-            color: "rgba(255,255,255,0.25)",
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-          }}
+          style={{ color: "rgba(255,255,255,0.22)", background: "none", border: "none", cursor: "pointer", fontSize: 12, marginTop: 12 }}
         >
           Skip hands check →
         </button>
@@ -122,8 +95,8 @@ function ReadyCheckOverlay({
 
 export function GameCanvas() {
   const gameCanvasRef = useRef<HTMLCanvasElement>(null);
-  const webcamRef    = useRef<HTMLVideoElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const webcamRef     = useRef<HTMLVideoElement>(null);
+  const containerRef  = useRef<HTMLDivElement>(null);
 
   const trackerRef  = useRef<HandTracker | null>(null);
   const detectorRef = useRef<PunchDetector | null>(null);
@@ -131,25 +104,14 @@ export function GameCanvas() {
   const engineRef   = useRef<GameEngine | null>(null);
 
   const [gameState, setGameState] = useState<GameState>({
-    phase: "start",
-    round: 1,
-    maxRounds: 3,
-    playerHealth: 100,
-    aiHealth: 100,
-    timeLeft: 60,
+    phase: "start", round: 1, maxRounds: 3,
+    playerHealth: 100, aiHealth: 100, timeLeft: 60,
     roundsWon: { player: 0, ai: 0 },
-    knockedDown: null,
-    knockdownCount: { player: 0, ai: 0 },
-    eightCount: 8,
-    winner: null,
-    countdownValue: 3,
-    isPlayerBlocking: false,
-    isAIBlocking: false,
-    lastPunchType: null,
-    lastPunchForce: 0,
-    lastPunchTs: 0,
-    comboCount: 0,
-    tutorialStep: 0,
+    knockedDown: null, knockdownCount: { player: 0, ai: 0 }, eightCount: 8,
+    winner: null, countdownValue: 3,
+    isPlayerBlocking: false, isAIBlocking: false,
+    lastPunchType: null, lastPunchForce: 0, lastPunchTs: 0,
+    comboCount: 0, tutorialStep: 0,
   });
 
   const [cameraReady, setCameraReady]     = useState(false);
@@ -158,13 +120,25 @@ export function GameCanvas() {
   const [handDots, setHandDots]           = useState<HandOverlayDot[]>([]);
   const [bothHandsVisible, setBothHandsVisible] = useState(false);
   const [shakeClass, setShakeClass]       = useState<ShakeLevel>("");
-  const [readyCheck, setReadyCheck]       = useState(false); // "raise fists" gate
+  const [readyCheck, setReadyCheck]       = useState(false);
+  const [showDebug, setShowDebug]         = useState(false);
+  const [debugInfo, setDebugInfo]         = useState<{ left: HandDebugInfo; right: HandDebugInfo }>({
+    left: EMPTY_DEBUG, right: EMPTY_DEBUG,
+  });
   const shakeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── 'D' key toggles debug overlay ─────────────────────────────────────────
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "d" || e.key === "D") setShowDebug((v) => !v);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // ── Auto-advance from readyCheck when both hands visible ──────────────────
   useEffect(() => {
     if (!readyCheck || !bothHandsVisible) return;
-    // Small debounce so the "READY!" flash is visible
     const t = setTimeout(() => {
       setReadyCheck(false);
       engineRef.current?.startMatch();
@@ -179,14 +153,11 @@ export function GameCanvas() {
     const canvas    = gameCanvasRef.current;
     const container = containerRef.current;
     if (!canvas || !container) return;
-
     canvas.width  = container.clientWidth;
     canvas.height = container.clientHeight;
-
     const scene = createScene(canvas);
     scene.startRendering();
     sceneRef.current = scene;
-
     const handleResize = () => {
       if (!container) return;
       canvas.width  = container.clientWidth;
@@ -235,6 +206,8 @@ export function GameCanvas() {
       detector.update(data.left, data.right);
       engineRef.current?.setPlayerBlocking(detector.isBlocking());
       setBothHandsVisible(detector.getBothHandsVisible());
+      // Grab debug info every frame (cheap copy)
+      setDebugInfo(detector.getDebugInfo());
 
       const dots: HandOverlayDot[] = [];
       const addDots = (lm: NormalizedLandmark[] | null, hand: "left" | "right") => {
@@ -266,13 +239,11 @@ export function GameCanvas() {
     const engine  = engineRef.current;
     const tracker = trackerRef.current;
     if (!engine || !tracker || !webcamRef.current) return;
-
     engine.startCameraSetup();
     setCameraError(null);
     setCameraReady(false);
     setTrackingReady(false);
     setBothHandsVisible(false);
-
     try {
       const trackerInit = tracker.init().then(() => setTrackingReady(true));
       await tracker.startCamera(webcamRef.current);
@@ -289,12 +260,7 @@ export function GameCanvas() {
     }
   }, []);
 
-  // FIGHT button → show "raise fists" gate, then auto-start
-  const handleFightClick = useCallback(() => {
-    setReadyCheck(true);
-  }, []);
-
-  // Skip the fists check and go straight to countdown
+  const handleFightClick = useCallback(() => { setReadyCheck(true); }, []);
   const handleSkipReadyCheck = useCallback(() => {
     setReadyCheck(false);
     engineRef.current?.startMatch();
@@ -302,40 +268,29 @@ export function GameCanvas() {
     sceneRef.current?.setAIKO(false);
   }, []);
 
-  const handleStartTutorial = useCallback(() => {
-    engineRef.current?.startTutorial();
-  }, []);
-
+  const handleStartTutorial = useCallback(() => { engineRef.current?.startTutorial(); }, []);
   const handleAdvanceTutorial = useCallback(() => {
     const state = engineRef.current?.getState();
     if (!state) return;
-    if (state.tutorialStep >= 4) {
-      // Tutorial complete → ready check then fight
-      setReadyCheck(true);
-    } else {
-      engineRef.current?.advanceTutorial();
-    }
+    if (state.tutorialStep >= 4) setReadyCheck(true);
+    else engineRef.current?.advanceTutorial();
   }, []);
-
-  const handleSkipTutorial = useCallback(() => {
-    handleSkipReadyCheck();
-  }, [handleSkipReadyCheck]);
 
   const handleRestart = useCallback(() => {
     setReadyCheck(false);
     engineRef.current?.reset();
-    // Camera is already running — skip back to camera-setup, not start screen
-    engineRef.current?.startCameraSetup();
+    engineRef.current?.startCameraSetup(); // skip back to camera-setup
     sceneRef.current?.setPlayerKO(false);
     sceneRef.current?.setAIKO(false);
   }, []);
 
   // ── Derived flags ─────────────────────────────────────────────────────────
-  // Don't show start screen once readyCheck is active (fight/tutorial chose their path)
   const showStart    = (gameState.phase === "start" || gameState.phase === "camera-setup") && !readyCheck;
   const showTutorial = gameState.phase === "tutorial" && !readyCheck;
   const showHUD      = ["fighting", "knockdown", "round-end"].includes(gameState.phase);
   const showWebcam   = gameState.phase !== "start";
+  // Show debug button hint when tracking is live
+  const showDebugHint = showWebcam && !showStart && !readyCheck && !showTutorial;
 
   return (
     <div
@@ -366,11 +321,11 @@ export function GameCanvas() {
           lastPunchTs={gameState.lastPunchTs}
           isBlocking={gameState.isPlayerBlocking}
           onAdvance={handleAdvanceTutorial}
-          onSkip={handleSkipTutorial}
+          onSkip={handleSkipReadyCheck}
         />
       )}
 
-      {/* "Raise both fists" gate — shown after clicking FIGHT or finishing tutorial */}
+      {/* Ready-check gate */}
       {readyCheck && !showTutorial && (
         <ReadyCheckOverlay
           bothHandsVisible={bothHandsVisible}
@@ -392,16 +347,39 @@ export function GameCanvas() {
         />
       )}
 
+      {/* Debug overlay */}
+      {showDebug && (
+        <DebugOverlay
+          left={debugInfo.left}
+          right={debugInfo.right}
+          onClose={() => setShowDebug(false)}
+        />
+      )}
+
+      {/* Debug toggle hint */}
+      {showDebugHint && !showDebug && (
+        <button
+          onClick={() => setShowDebug(true)}
+          style={{
+            position: "absolute", bottom: 148, right: 16,
+            fontSize: 9, color: "rgba(255,255,255,0.18)",
+            background: "rgba(0,0,0,0.4)",
+            border: "1px solid rgba(255,255,255,0.08)",
+            borderRadius: 4, padding: "3px 6px",
+            cursor: "pointer", zIndex: 21,
+            fontFamily: "monospace", letterSpacing: 1,
+          }}
+        >
+          [D] debug
+        </button>
+      )}
+
       {/* Webcam preview */}
       <div
         className="absolute z-20"
         style={{
-          bottom: 16,
-          left: 16,
-          width: 160,
-          height: 120,
-          borderRadius: 10,
-          overflow: "hidden",
+          bottom: 16, left: 16, width: 160, height: 120,
+          borderRadius: 10, overflow: "hidden",
           border: bothHandsVisible
             ? "2px solid rgba(34,197,94,0.7)"
             : "2px solid rgba(74,144,255,0.4)",
@@ -414,22 +392,18 @@ export function GameCanvas() {
       >
         <video
           ref={webcamRef}
-          autoPlay
-          playsInline
-          muted
+          autoPlay playsInline muted
           className="w-full h-full object-cover"
           style={{ transform: "scaleX(-1)" }}
           data-testid="video-webcam"
         />
-        {/* Hand tracking dots */}
         <div className="absolute inset-0 pointer-events-none">
           {handDots.map((dot, i) => (
             <div
               key={i}
               className="hand-dot"
               style={{
-                left: `${dot.x}%`,
-                top: `${dot.y}%`,
+                left: `${dot.x}%`, top: `${dot.y}%`,
                 background: dot.hand === "left" ? "#4a90ff" : "#ff4a17",
                 boxShadow: `0 0 4px ${dot.hand === "left" ? "#4a90ff" : "#ff4a17"}`,
               }}
@@ -438,11 +412,7 @@ export function GameCanvas() {
         </div>
         <div
           className="absolute bottom-1 left-0 right-0 text-center font-bold"
-          style={{
-            fontSize: 9,
-            letterSpacing: 2,
-            color: bothHandsVisible ? "#22c55e" : "#4a90ffaa",
-          }}
+          style={{ fontSize: 9, letterSpacing: 2, color: bothHandsVisible ? "#22c55e" : "#4a90ffaa" }}
         >
           {bothHandsVisible ? "✓ FISTS READY" : "YOU"}
         </div>

@@ -49,11 +49,18 @@ const GETUP_HEALTH = 28;    // health restored when getting up
 const EIGHT_COUNT_SECS = 4; // referee counts 8→10 over this many seconds
 
 const BASE_DMG: Record<string, number> = {
-  jab: 7,
-  hook: 13,
+  jab:      7,
+  hook:     13,
   uppercut: 10,
+  charge:   20,  // charge attack — heavy hitter
 };
-const BLOCK_REDUCTION = 0.2; // only 20% of damage gets through when blocking
+// % of damage that gets through when blocking (charge pierces guard more)
+const BLOCK_REDUCTION: Record<string, number> = {
+  jab:      0.20,
+  hook:     0.20,
+  uppercut: 0.20,
+  charge:   0.45, // charge partially breaks guard
+};
 // ─────────────────────────────────────────────────────────────────────────────
 
 export class GameEngine {
@@ -216,7 +223,8 @@ export class GameEngine {
     const raw = base * (0.4 + force * 0.6);
     const isBlocking =
       target === "player" ? this.state.isPlayerBlocking : this.state.isAIBlocking;
-    const final = Math.round((isBlocking ? raw * BLOCK_REDUCTION : raw) * 10) / 10;
+    const blockPct = BLOCK_REDUCTION[punchType] ?? 0.20;
+    const final = Math.round((isBlocking ? raw * blockPct : raw) * 10) / 10;
 
     if (target === "ai") {
       this.state.aiHealth = Math.max(0, this.state.aiHealth - final);
