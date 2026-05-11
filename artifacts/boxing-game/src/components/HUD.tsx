@@ -71,15 +71,30 @@ function PowerShotOverlay({ type, force, ts }: { type: PunchType | null; force: 
   const [visible, setVisible] = useState(false);
   const [key, setKey] = useState(0);
   const prevTs = useRef(0);
+  const hideTimer = useRef<number | null>(null);
 
   useEffect(() => {
     if (ts !== prevTs.current && ts > 0 && (force >= 0.5 || type === "charge")) {
       prevTs.current = ts;
       setKey((k) => k + 1);
       setVisible(true);
-      setTimeout(() => setVisible(false), type === "charge" ? 750 : 550);
+
+      if (hideTimer.current !== null) {
+        window.clearTimeout(hideTimer.current);
+      }
+
+      hideTimer.current = window.setTimeout(() => {
+        setVisible(false);
+        hideTimer.current = null;
+      }, type === "charge" ? 750 : 550);
     }
   }, [ts, force, type]);
+
+  useEffect(() => () => {
+    if (hideTimer.current !== null) {
+      window.clearTimeout(hideTimer.current);
+    }
+  }, []);
 
   if (!visible || !type) return null;
   const meta  = POWER_LABELS[type] ?? POWER_LABELS.jab;
