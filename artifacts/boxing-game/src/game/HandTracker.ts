@@ -37,9 +37,9 @@ export class HandTracker {
       },
       runningMode: "VIDEO",
       numHands: 2,
-      minHandDetectionConfidence: 0.5,
-      minHandPresenceConfidence: 0.5,
-      minTrackingConfidence: 0.5,
+      minHandDetectionConfidence: 0.42,
+      minHandPresenceConfidence: 0.42,
+      minTrackingConfidence: 0.42,
     });
     this.ready = true;
   }
@@ -47,7 +47,13 @@ export class HandTracker {
   async startCamera(videoEl: HTMLVideoElement): Promise<void> {
     this.video = videoEl;
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: 640, height: 480, facingMode: "user" },
+      video: {
+        width: { ideal: 960, min: 640 },
+        height: { ideal: 540, min: 480 },
+        frameRate: { ideal: 60, min: 24 },
+        facingMode: "user",
+      },
+      audio: false,
     });
     videoEl.srcObject = stream;
     await new Promise<void>((res) => {
