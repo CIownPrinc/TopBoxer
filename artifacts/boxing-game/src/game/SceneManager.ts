@@ -23,6 +23,7 @@ export interface IScene {
     rightState: HandState,
   ): void;
   resetCamera(): void;
+  setRefereeState(phase: "idle" | "counting" | "fight"): void;
 }
 
 function supportsWebGL(): boolean {
@@ -80,4 +81,5 @@ class NoOpScene implements IScene {
   transitionToFirstPerson(): void {}
   updatePlayerHands(): void {}
   resetCamera(): void {}
+  setRefereeState(_phase: "idle" | "counting" | "fight"): void {}
 }

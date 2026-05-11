@@ -51,6 +51,7 @@ export class Scene2D {
   transitionToFirstPerson(): void {}
   updatePlayerHands(): void {}
   resetCamera(): void {}
+  setRefereeState(_phase: "idle" | "counting" | "fight"): void {}
 
   startRendering(): void {
     if (this.running) return;

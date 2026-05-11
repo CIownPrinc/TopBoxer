@@ -156,14 +156,15 @@ export function GameCanvas() {
     return () => clearTimeout(t);
   }, [readyCheck, bothHandsVisible]);
 
-  // ── First-person transition — 4 s after each round fight begins ───────────
+  // ── Referee-led first-person transition before combat ───────────────────────
   useEffect(() => {
-    if (gameState.phase !== "fighting") return;
+    if (gameState.phase !== "camera-transition") return;
     if (fpTriggeredRef.current) return;
+    sceneRef.current?.transitionToFirstPerson();
+    fpTriggeredRef.current = true;
     const t = setTimeout(() => {
-      sceneRef.current?.transitionToFirstPerson();
-      fpTriggeredRef.current = true;
-    }, 4000);
+      engineRef.current?.beginCombatAfterTransition();
+    }, 2700);
     return () => clearTimeout(t);
   }, [gameState.phase, gameState.round]);
 
@@ -268,11 +269,17 @@ export function GameCanvas() {
   useEffect(() => {
     if (gameState.knockedDown === "player") sceneRef.current?.setPlayerKO(true);
     if (gameState.knockedDown === "ai")     sceneRef.current?.setAIKO(true);
-    if (gameState.phase === "countdown" || gameState.phase === "fighting") {
+    if (["referee-start", "camera-transition", "fighting"].includes(gameState.phase)) {
       sceneRef.current?.setPlayerKO(false);
       sceneRef.current?.setAIKO(false);
     }
   }, [gameState.knockedDown, gameState.phase]);
+
+  useEffect(() => {
+    if (gameState.phase === "referee-start") sceneRef.current?.setRefereeState("counting");
+    else if (gameState.phase === "camera-transition") sceneRef.current?.setRefereeState("fight");
+    else sceneRef.current?.setRefereeState("idle");
+  }, [gameState.phase]);
 
   // ── Handlers ──────────────────────────────────────────────────────────────
   const handleSetupCamera = useCallback(async () => {
