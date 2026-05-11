@@ -19,6 +19,7 @@ type ShakeLevel = "" | "shake-sm" | "shake-md" | "shake-lg";
 const EMPTY_DEBUG: HandDebugInfo = {
   state: "idle", speed: 0, vel: { x: 0, y: 0, z: 0 },
   lastGesture: "idle", confidence: 0, blocking: false,
+  pos: { x: 0, y: 0, z: 0 }, direction: { x: 0, y: 0, z: 0 }, stability: 1, trackingConfidence: 0,
 };
 
 // ── Ready-check overlay ────────────────────────────────────────────────────────
@@ -224,7 +225,11 @@ export function GameCanvas() {
     });
 
     tracker.onTrack((data) => {
-      detector.update(data.left, data.right);
+      detector.update(data.left, data.right, {
+        left: data.leftConfidence,
+        right: data.rightConfidence,
+        tracking: data.trackingConfidence,
+      });
       const dbg = detector.getDebugInfo();
       const isBlocking = detector.isBlocking();
 
@@ -237,6 +242,11 @@ export function GameCanvas() {
 
       setBothHandsVisible(detector.getBothHandsVisible());
       setDebugInfo(detector.getDebugInfo());
+      engineRef.current?.setPlayerTrackingSignal({
+        confidence: data.trackingConfidence,
+        speed: Math.max(dbg.left.speed, dbg.right.speed),
+        blocking: isBlocking,
+      });
 
       // Webcam overlay dots
       const dots: HandOverlayDot[] = [];
@@ -352,6 +362,8 @@ export function GameCanvas() {
           lastPunchType={gameState.lastPunchType}
           lastPunchTs={gameState.lastPunchTs}
           isBlocking={gameState.isPlayerBlocking}
+          leftDebug={debugInfo.left}
+          rightDebug={debugInfo.right}
           onAdvance={handleAdvanceTutorial}
           onSkip={handleSkipReadyCheck}
         />

@@ -98,6 +98,7 @@ export class GameEngine {
   private aiPunchTimer: ReturnType<typeof setTimeout> | null = null;
   private onAIPunchCb: ((hand: "left" | "right") => void) | null = null;
   private playerPattern = { jab: 0, hook: 0, uppercut: 0, charge: 0 };
+  private trackingSignal = { confidence: 0, speed: 0, blocking: false };
 
   // ── Public API ──────────────────────────────────────────────────────────────
   onState(cb: StateListener): void { this.listeners.push(cb); }
@@ -154,6 +155,10 @@ export class GameEngine {
 
   setPlayerBlocking(blocking: boolean): void {
     this.state.isPlayerBlocking = blocking;
+  }
+
+  setPlayerTrackingSignal(signal: { confidence: number; speed: number; blocking: boolean }): void {
+    this.trackingSignal = signal;
   }
 
   reset(): void {
@@ -240,9 +245,12 @@ export class GameEngine {
       if (this.state.phase !== "fighting") return;
       const hand = Math.random() > 0.5 ? "left" : "right";
       this.onAIPunchCb?.(hand);
-      const willBlock = Math.random() < profile.defenseBias + adaptBias;
+      const speedBias = Math.min(0.18, this.trackingSignal.speed * 0.08);
+      const reliabilityBias = Math.max(0, (this.trackingSignal.confidence - 0.5) * 0.12);
+      const willBlock = Math.random() < profile.defenseBias + adaptBias + speedBias + reliabilityBias;
       this.state.isAIBlocking = willBlock;
-      if (Math.random() < profile.aggression || Math.random() < profile.counterBias + adaptBias * 0.5) {
+      const counterWindow = profile.counterBias + adaptBias * 0.5 + (this.trackingSignal.blocking ? 0.12 : 0);
+      if (Math.random() < profile.aggression || Math.random() < counterWindow) {
         const type = this.pickPunchType(profile);
         const reactionVariance = 1 - (Math.random() * 0.22 - 0.11);
         const force = (0.32 + Math.random() * 0.58) * profile.damageMul * reactionVariance;
