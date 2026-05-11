@@ -39,6 +39,7 @@ export interface GameState {
   opponentTier: CPUStage;
   trophies: number;
   streak: number;
+  trackingQuality: number;
 }
 
 type CPUArchetype = "tank" | "speedster" | "balanced" | "aggressive";
@@ -161,6 +162,7 @@ export class GameEngine {
 
   setPlayerTrackingSignal(signal: { confidence: number; speed: number; blocking: boolean }): void {
     this.trackingSignal = signal;
+    this.state.trackingQuality = Math.max(0, Math.min(1, signal.confidence));
   }
 
   reset(): void {
@@ -195,6 +197,7 @@ export class GameEngine {
       opponentTier: "early",
       trophies: 0,
       streak: 0,
+      trackingQuality: 0,
     };
   }
 
