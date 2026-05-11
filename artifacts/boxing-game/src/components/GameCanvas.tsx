@@ -71,7 +71,7 @@ function ReadyCheckOverlay({
         </div>
         {!bothHandsVisible && (
           <div
-            className={`step-glow inline-block px-5 py-2 rounded-lg text-sm font-bold mb-4`}
+            className="step-glow inline-block px-5 py-2 rounded-lg text-sm font-bold mb-4"
             style={{
               border: "1px solid rgba(74,144,255,0.4)",
               color: "rgba(74,144,255,0.8)",
@@ -84,7 +84,10 @@ function ReadyCheckOverlay({
         <br />
         <button
           onClick={onSkip}
-          style={{ color: "rgba(255,255,255,0.22)", background: "none", border: "none", cursor: "pointer", fontSize: 12, marginTop: 12 }}
+          style={{
+            color: "rgba(255,255,255,0.22)", background: "none", border: "none",
+            cursor: "pointer", fontSize: 12, marginTop: 12,
+          }}
         >
           Skip hands check →
         </button>
@@ -102,6 +105,9 @@ export function GameCanvas() {
   const detectorRef = useRef<PunchDetector | null>(null);
   const sceneRef    = useRef<IScene | null>(null);
   const engineRef   = useRef<GameEngine | null>(null);
+
+  // Track whether we've triggered the FP transition in this match
+  const fpTriggeredRef = useRef(false);
 
   const [gameState, setGameState] = useState<GameState>({
     phase: "start", round: 1, maxRounds: 3,
@@ -127,7 +133,7 @@ export function GameCanvas() {
   });
   const shakeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ── 'D' key toggles debug overlay ─────────────────────────────────────────
+  // ── D key toggles debug overlay ───────────────────────────────────────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "d" || e.key === "D") setShowDebug((v) => !v);
@@ -136,7 +142,7 @@ export function GameCanvas() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // ── Auto-advance from readyCheck when both hands visible ──────────────────
+  // ── Auto-advance ready-check when both hands visible ─────────────────────
   useEffect(() => {
     if (!readyCheck || !bothHandsVisible) return;
     const t = setTimeout(() => {
@@ -148,6 +154,17 @@ export function GameCanvas() {
     return () => clearTimeout(t);
   }, [readyCheck, bothHandsVisible]);
 
+  // ── First-person transition — 4 s after each round fight begins ───────────
+  useEffect(() => {
+    if (gameState.phase !== "fighting") return;
+    if (fpTriggeredRef.current) return;
+    const t = setTimeout(() => {
+      sceneRef.current?.transitionToFirstPerson();
+      fpTriggeredRef.current = true;
+    }, 4000);
+    return () => clearTimeout(t);
+  }, [gameState.phase, gameState.round]);
+
   // ── Scene ─────────────────────────────────────────────────────────────────
   useEffect(() => {
     const canvas    = gameCanvasRef.current;
@@ -158,17 +175,16 @@ export function GameCanvas() {
     const scene = createScene(canvas);
     scene.startRendering();
     sceneRef.current = scene;
-    const handleResize = () => {
-      if (!container) return;
+    const onResize = () => {
       canvas.width  = container.clientWidth;
       canvas.height = container.clientHeight;
       scene.resize(container.clientWidth, container.clientHeight);
     };
-    window.addEventListener("resize", handleResize);
-    return () => { window.removeEventListener("resize", handleResize); scene.dispose(); };
+    window.addEventListener("resize", onResize);
+    return () => { window.removeEventListener("resize", onResize); scene.dispose(); };
   }, []);
 
-  // ── Camera shake ──────────────────────────────────────────────────────────
+  // ── Camera shake (CSS) ────────────────────────────────────────────────────
   const triggerShake = useCallback((force: number) => {
     const level: ShakeLevel =
       force >= 0.85 ? "shake-lg" : force >= 0.55 ? "shake-md" : "shake-sm";
@@ -182,8 +198,12 @@ export function GameCanvas() {
     const engine = new GameEngine();
     engine.onState(setGameState);
     engine.onHit((target, force) => {
-      if (target === "ai") sceneRef.current?.triggerAIHit();
-      else { sceneRef.current?.triggerPlayerHit(); triggerShake(force); }
+      if (target === "ai") {
+        sceneRef.current?.triggerAIHit(force);
+      } else {
+        sceneRef.current?.triggerPlayerHit(force);
+        triggerShake(force);
+      }
     });
     engine.setAIPunchCallback((hand) => sceneRef.current?.triggerAIPunch(hand));
     engineRef.current = engine;
@@ -204,11 +224,20 @@ export function GameCanvas() {
 
     tracker.onTrack((data) => {
       detector.update(data.left, data.right);
-      engineRef.current?.setPlayerBlocking(detector.isBlocking());
+      const dbg = detector.getDebugInfo();
+      const isBlocking = detector.isBlocking();
+
+      // Feed hand data to engine (damage calc) and scene (FP gloves + body anim)
+      engineRef.current?.setPlayerBlocking(isBlocking);
+      sceneRef.current?.setPlayerBlocking(isBlocking);
+      sceneRef.current?.updatePlayerHands(
+        data.left, data.right, dbg.left.state, dbg.right.state,
+      );
+
       setBothHandsVisible(detector.getBothHandsVisible());
-      // Grab debug info every frame (cheap copy)
       setDebugInfo(detector.getDebugInfo());
 
+      // Webcam overlay dots
       const dots: HandOverlayDot[] = [];
       const addDots = (lm: NormalizedLandmark[] | null, hand: "left" | "right") => {
         if (!lm) return;
@@ -216,7 +245,7 @@ export function GameCanvas() {
           if (lm[i]) dots.push({ x: (1 - lm[i].x) * 100, y: lm[i].y * 100, hand });
         });
       };
-      addDots(data.left, "left");
+      addDots(data.left,  "left");
       addDots(data.right, "right");
       setHandDots(dots);
     });
@@ -224,7 +253,7 @@ export function GameCanvas() {
     return () => { tracker.stopCamera(); tracker.stopTracking(); };
   }, []);
 
-  // ── KO sync ───────────────────────────────────────────────────────────────
+  // ── KO sync to scene ──────────────────────────────────────────────────────
   useEffect(() => {
     if (gameState.knockedDown === "player") sceneRef.current?.setPlayerKO(true);
     if (gameState.knockedDown === "ai")     sceneRef.current?.setAIKO(true);
@@ -260,15 +289,15 @@ export function GameCanvas() {
     }
   }, []);
 
-  const handleFightClick = useCallback(() => { setReadyCheck(true); }, []);
-  const handleSkipReadyCheck = useCallback(() => {
+  const handleFightClick      = useCallback(() => setReadyCheck(true), []);
+  const handleSkipReadyCheck  = useCallback(() => {
     setReadyCheck(false);
     engineRef.current?.startMatch();
     sceneRef.current?.setPlayerKO(false);
     sceneRef.current?.setAIKO(false);
   }, []);
 
-  const handleStartTutorial = useCallback(() => { engineRef.current?.startTutorial(); }, []);
+  const handleStartTutorial   = useCallback(() => engineRef.current?.startTutorial(), []);
   const handleAdvanceTutorial = useCallback(() => {
     const state = engineRef.current?.getState();
     if (!state) return;
@@ -277,9 +306,12 @@ export function GameCanvas() {
   }, []);
 
   const handleRestart = useCallback(() => {
+    // Reset FP camera and trigger flag
+    fpTriggeredRef.current = false;
+    sceneRef.current?.resetCamera();
     setReadyCheck(false);
     engineRef.current?.reset();
-    engineRef.current?.startCameraSetup(); // skip back to camera-setup
+    engineRef.current?.startCameraSetup();
     sceneRef.current?.setPlayerKO(false);
     sceneRef.current?.setAIKO(false);
   }, []);
@@ -289,7 +321,6 @@ export function GameCanvas() {
   const showTutorial = gameState.phase === "tutorial" && !readyCheck;
   const showHUD      = ["fighting", "knockdown", "round-end"].includes(gameState.phase);
   const showWebcam   = gameState.phase !== "start";
-  // Show debug button hint when tracking is live
   const showDebugHint = showWebcam && !showStart && !readyCheck && !showTutorial;
 
   return (
@@ -309,7 +340,7 @@ export function GameCanvas() {
       {/* HUD */}
       {showHUD && <HUD state={gameState} />}
 
-      {/* Round / countdown / KO / game-over */}
+      {/* Round / KO / game-over overlays */}
       <RoundOverlay state={gameState} onRestart={handleRestart} />
 
       {/* Tutorial */}

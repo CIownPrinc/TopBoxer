@@ -43,10 +43,14 @@ export class Scene2D {
 
   triggerPlayerPunch(hand: "left" | "right"): void { this.pState.punchAnim = { hand, t: 0 }; }
   triggerAIPunch(hand: "left" | "right"): void { this.aState.punchAnim = { hand, t: 0 }; }
-  triggerPlayerHit(): void { this.pState.hitAnim = 1; }
-  triggerAIHit(): void { this.aState.hitAnim = 1; }
+  triggerPlayerHit(_force?: number): void { this.pState.hitAnim = 1; }
+  triggerAIHit(_force?: number): void { this.aState.hitAnim = 1; }
   setPlayerKO(v: boolean): void { this.pState.isKO = v; if (!v) this.pState.koAngle = 0; }
   setAIKO(v: boolean): void { this.aState.isKO = v; if (!v) this.aState.koAngle = 0; }
+  setPlayerBlocking(v: boolean): void { this.pState.blocking = v; }
+  transitionToFirstPerson(): void {}
+  updatePlayerHands(): void {}
+  resetCamera(): void {}
 
   startRendering(): void {
     if (this.running) return;

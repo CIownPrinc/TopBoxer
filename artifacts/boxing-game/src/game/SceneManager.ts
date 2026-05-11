@@ -1,46 +1,83 @@
+import type { NormalizedLandmark } from "@mediapipe/tasks-vision";
+import type { HandState } from "./PunchDetector";
 import { ThreeScene } from "./ThreeScene";
 import { Scene2D } from "./Scene2D";
 
 export interface IScene {
   triggerPlayerPunch(hand: "left" | "right"): void;
   triggerAIPunch(hand: "left" | "right"): void;
-  triggerPlayerHit(): void;
-  triggerAIHit(): void;
+  triggerPlayerHit(force?: number): void;
+  triggerAIHit(force?: number): void;
   setPlayerKO(v: boolean): void;
   setAIKO(v: boolean): void;
+  setPlayerBlocking(v: boolean): void;
   startRendering(): void;
   stopRendering(): void;
   resize(w: number, h: number): void;
   dispose(): void;
+  transitionToFirstPerson(): void;
+  updatePlayerHands(
+    left:  NormalizedLandmark[] | null,
+    right: NormalizedLandmark[] | null,
+    leftState:  HandState,
+    rightState: HandState,
+  ): void;
+  resetCamera(): void;
 }
 
-/** Check WebGL availability on a throw-away canvas — does NOT touch the game canvas */
 function supportsWebGL(): boolean {
   try {
-    const test = document.createElement("canvas");
-    const ctx =
-      test.getContext("webgl2") ||
-      test.getContext("webgl") ||
-      test.getContext("experimental-webgl");
-    return !!ctx;
-  } catch {
-    return false;
-  }
+    const t = document.createElement("canvas");
+    return !!(t.getContext("webgl2") || t.getContext("webgl") || t.getContext("experimental-webgl"));
+  } catch { return false; }
+}
+
+/** Returns true if the canvas already has a WebGL context attached */
+function hasWebGLContext(canvas: HTMLCanvasElement): boolean {
+  try {
+    return !!(canvas.getContext("webgl2") || canvas.getContext("webgl"));
+  } catch { return false; }
 }
 
 export function createScene(canvas: HTMLCanvasElement): IScene {
   if (supportsWebGL()) {
+    const three = new ThreeScene();
     try {
-      const scene = new ThreeScene();
-      scene.init(canvas);
-      return scene;
-    } catch {
-      // WebGL available but Three.js init failed — fall through to 2D
+      three.init(canvas);
+      return three;
+    } catch (err) {
+      const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      const stk = err instanceof Error ? err.stack : "(no stack)";
+      console.error("[ThreeScene] init failed:", msg, stk);
+      three.dispose();
     }
   }
 
-  // Fallback: plain 2D canvas renderer
-  const scene2d = new Scene2D();
-  scene2d.init(canvas);
-  return scene2d;
+  // Only fall back to 2D if the canvas does NOT already have a WebGL context
+  if (hasWebGLContext(canvas)) {
+    console.warn("[SceneManager] Canvas has WebGL context; cannot fall back to 2D. Using no-op scene.");
+    return new NoOpScene();
+  }
+
+  const s2 = new Scene2D();
+  s2.init(canvas);
+  return s2;
+}
+
+/** Safety valve — if both renderers fail, return a scene that does nothing */
+class NoOpScene implements IScene {
+  triggerPlayerPunch(_hand: "left" | "right"): void {}
+  triggerAIPunch(_hand: "left" | "right"): void {}
+  triggerPlayerHit(_force?: number): void {}
+  triggerAIHit(_force?: number): void {}
+  setPlayerKO(_v: boolean): void {}
+  setAIKO(_v: boolean): void {}
+  setPlayerBlocking(_v: boolean): void {}
+  startRendering(): void {}
+  stopRendering(): void {}
+  resize(_w: number, _h: number): void {}
+  dispose(): void {}
+  transitionToFirstPerson(): void {}
+  updatePlayerHands(): void {}
+  resetCamera(): void {}
 }
