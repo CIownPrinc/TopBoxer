@@ -1,0 +1,55 @@
+Upgrade the game’s single-player AI and progression system while preserving all existing mechanics (hand tracking, combat system, first-person mode, visuals, and controls).
+
+1. Improved CPU Opponents (AI Overhaul)
+Replace the current CPU with a more advanced system that supports multiple distinct opponent archetypes with different behaviors, strengths, and weaknesses.
+CPU Types
+Implement at least the following categories:
+Tank CPU
+High health, slow movement
+Prefers blocking and heavy counterattacks
+Punishes over-aggressive players
+Speedster CPU
+Low health, very fast movement and reaction time
+Frequent jabs and hooks
+Hard to hit, but low damage output
+Balanced CPU
+Moderate stats across all attributes
+Adaptive behavior based on player style
+Aggressive CPU
+Constant pressure, high attack frequency
+Lower defense, takes risks
+
+AI Requirements
+Add reaction timing variability (not robotic perfect responses)
+Include difficulty scaling per CPU tier
+AI should adapt slightly to player behavior over time (e.g., block more if repeatedly jabbed)
+Improve hit detection decisions (when to block, dodge, or counter)
+Ensure CPUs feel human-like, not scripted
+
+2. Trophy Road / Progression System
+Add a structured progression system where players advance through increasingly difficult opponents.
+Core Mechanics
+Players start at low-tier opponents
+Winning matches grants trophies or points
+Losing reduces trophies or causes rank drops
+Progression unlocks harder CPU tiers
+Structure
+Early stage: easy, forgiving CPUs
+Mid stage: mixed archetypes with moderate AI intelligence
+High stage: fast reaction, adaptive AI, advanced behavior
+End stage: elite CPU opponents with near-perfect strategy (but still fair)
+
+Matchmaking / Progression Rules
+Win → gain trophies and move up ladder
+Loss → lose trophies and may drop tiers
+Streaks can slightly boost progression speed
+Match difficulty scales based on current trophy level
+
+3. Integration Requirements
+Must integrate with existing combat system and hand tracking
+No changes to input mechanics—AI only interacts through existing gameplay systems
+Ensure CPU behavior works in both third-person and first-person modes
+Maintain performance and responsiveness
+
+Goal
+Create a meaningful single-player progression system with varied, intelligent opponent types that feel distinct, challenging, and rewarding—turning the game into a skill-based boxing ladder rather than static AI fights.
