@@ -118,6 +118,7 @@ export function GameCanvas() {
     isPlayerBlocking: false, isAIBlocking: false,
     lastPunchType: null, lastPunchForce: 0, lastPunchTs: 0,
     comboCount: 0, tutorialStep: 0,
+    opponentArchetype: "balanced", opponentTier: "early", trophies: 0, streak: 0,
   });
 
   const [cameraReady, setCameraReady]     = useState(false);

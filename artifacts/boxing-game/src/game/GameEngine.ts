@@ -33,6 +33,28 @@ export interface GameState {
   comboCount: number;
   // Tutorial
   tutorialStep: number; // 0–4
+  opponentArchetype: CPUArchetype;
+  opponentTier: CPUStage;
+  trophies: number;
+  streak: number;
+}
+
+type CPUArchetype = "tank" | "speedster" | "balanced" | "aggressive";
+type CPUStage = "early" | "mid" | "high" | "elite";
+
+interface CPUProfile {
+  archetype: CPUArchetype;
+  stage: CPUStage;
+  maxHealth: number;
+  minDelay: number;
+  maxDelay: number;
+  reaction: number;
+  defenseBias: number;
+  counterBias: number;
+  aggression: number;
+  moveVariance: number;
+  damageMul: number;
+  preferredPunches: PunchType[];
 }
 
 export type StateListener = (state: GameState) => void;
@@ -47,6 +69,8 @@ const MAX_ROUNDS = 3;
 const MAX_KNOCKDOWNS = 3;   // Three-knockdown rule → TKO
 const GETUP_HEALTH = 28;    // health restored when getting up
 const EIGHT_COUNT_SECS = 4; // referee counts 8→10 over this many seconds
+const TROPHY_FLOOR = 0;
+const TROPHY_CEIL = 500;
 
 const BASE_DMG: Record<string, number> = {
   jab:      7,
@@ -73,6 +97,7 @@ export class GameEngine {
   private comboTimer: ReturnType<typeof setTimeout> | null = null;
   private aiPunchTimer: ReturnType<typeof setTimeout> | null = null;
   private onAIPunchCb: ((hand: "left" | "right") => void) | null = null;
+  private playerPattern = { jab: 0, hook: 0, uppercut: 0, charge: 0 };
 
   // ── Public API ──────────────────────────────────────────────────────────────
   onState(cb: StateListener): void { this.listeners.push(cb); }
@@ -101,7 +126,11 @@ export class GameEngine {
       ...this.defaultState(),
       phase: "countdown",
       roundsWon: { ...this.state.roundsWon }, // preserve cross-round wins
+      trophies: this.state.trophies,
+      streak: this.state.streak,
     };
+    this.state.opponentTier = this.getTierFromTrophies(this.state.trophies);
+    this.state.opponentArchetype = this.pickArchetype(this.state.opponentTier);
     this.startCountdown();
     this.emit();
   }
@@ -112,6 +141,7 @@ export class GameEngine {
     this.state.lastPunchForce = event.force;
     this.state.lastPunchTs = Date.now();
     this.applyDamage("player", event.type, event.force);
+    this.playerPattern[event.type] = (this.playerPattern[event.type] ?? 0) + 1;
 
     // Combo tracking
     if (this.comboTimer) clearTimeout(this.comboTimer);
@@ -154,6 +184,10 @@ export class GameEngine {
       lastPunchTs: 0,
       comboCount: 0,
       tutorialStep: 0,
+      opponentArchetype: "balanced",
+      opponentTier: "early",
+      trophies: 0,
+      streak: 0,
     };
   }
 
@@ -177,9 +211,10 @@ export class GameEngine {
   }
 
   private startFighting(): void {
+    const profile = this.getCPUProfile();
     this.state.phase = "fighting";
     this.state.playerHealth = MAX_HEALTH;
-    this.state.aiHealth = MAX_HEALTH;
+    this.state.aiHealth = profile.maxHealth;
     this.state.timeLeft = ROUND_DURATION;
     this.state.knockedDown = null;
     this.emit();
@@ -198,16 +233,28 @@ export class GameEngine {
 
   private scheduleAIPunch(): void {
     if (this.state.phase !== "fighting") return;
-    // Delay 1.8–4s; harder = faster
-    const delay = 1800 + Math.random() * 2200;
+    const profile = this.getCPUProfile();
+    const adaptBias = this.getDominantPlayerPunchRatio();
+    const delay = this.randRange(profile.minDelay, profile.maxDelay) * (1 + Math.random() * profile.moveVariance);
     this.aiPunchTimer = setTimeout(() => {
       if (this.state.phase !== "fighting") return;
       const hand = Math.random() > 0.5 ? "left" : "right";
       this.onAIPunchCb?.(hand);
-      const types = ["jab", "hook", "uppercut"] as const;
-      const type = types[Math.floor(Math.random() * types.length)];
-      const force = 0.35 + Math.random() * 0.5;
-      this.applyDamage("ai", type, force);
+      const willBlock = Math.random() < profile.defenseBias + adaptBias;
+      this.state.isAIBlocking = willBlock;
+      if (Math.random() < profile.aggression || Math.random() < profile.counterBias + adaptBias * 0.5) {
+        const type = this.pickPunchType(profile);
+        const reactionVariance = 1 - (Math.random() * 0.22 - 0.11);
+        const force = (0.32 + Math.random() * 0.58) * profile.damageMul * reactionVariance;
+        this.applyDamage("ai", type, Math.min(1, Math.max(0.2, force)));
+      }
+      if (willBlock && Math.random() < profile.reaction) {
+        setTimeout(() => {
+          this.state.isAIBlocking = false;
+          this.emit();
+        }, this.randRange(250, 520));
+      }
+      this.emit();
       this.scheduleAIPunch();
     }, delay);
   }
@@ -312,6 +359,7 @@ export class GameEngine {
     if (roundsWon.player >= needed || roundsWon.ai >= needed || round >= MAX_ROUNDS) {
       this.state.phase = "game-over";
       this.state.winner = roundsWon.player > roundsWon.ai ? "player" : "ai";
+      this.applyProgressionResult();
       this.emit();
       return;
     }
@@ -328,5 +376,71 @@ export class GameEngine {
     if (this.eightCountTimer) { clearInterval(this.eightCountTimer); this.eightCountTimer = null; }
     if (this.aiPunchTimer) { clearTimeout(this.aiPunchTimer); this.aiPunchTimer = null; }
     if (this.comboTimer) { clearTimeout(this.comboTimer); this.comboTimer = null; }
+  }
+
+  private getTierFromTrophies(trophies: number): CPUStage {
+    if (trophies >= 360) return "elite";
+    if (trophies >= 220) return "high";
+    if (trophies >= 90) return "mid";
+    return "early";
+  }
+
+  private pickArchetype(stage: CPUStage): CPUArchetype {
+    const pool: Record<CPUStage, CPUArchetype[]> = {
+      early: ["balanced", "speedster"],
+      mid: ["balanced", "tank", "aggressive", "speedster"],
+      high: ["tank", "aggressive", "speedster", "balanced"],
+      elite: ["tank", "aggressive", "speedster", "balanced"],
+    };
+    const p = pool[stage];
+    return p[Math.floor(Math.random() * p.length)];
+  }
+
+  private getCPUProfile(): CPUProfile {
+    const stage = this.state.opponentTier;
+    const arch = this.state.opponentArchetype;
+    const stageMul = stage === "elite" ? 1.15 : stage === "high" ? 1.05 : stage === "mid" ? 0.95 : 0.85;
+    const base: Record<CPUArchetype, CPUProfile> = {
+      tank: { archetype: "tank", stage, maxHealth: 118, minDelay: 1150, maxDelay: 2100, reaction: 0.5, defenseBias: 0.52, counterBias: 0.58, aggression: 0.45, moveVariance: 0.2, damageMul: 1.1, preferredPunches: ["hook", "uppercut", "jab"] },
+      speedster: { archetype: "speedster", stage, maxHealth: 84, minDelay: 650, maxDelay: 1300, reaction: 0.72, defenseBias: 0.34, counterBias: 0.42, aggression: 0.68, moveVariance: 0.26, damageMul: 0.82, preferredPunches: ["jab", "hook", "jab", "uppercut"] },
+      balanced: { archetype: "balanced", stage, maxHealth: 100, minDelay: 900, maxDelay: 1650, reaction: 0.6, defenseBias: 0.43, counterBias: 0.46, aggression: 0.56, moveVariance: 0.22, damageMul: 0.98, preferredPunches: ["jab", "hook", "uppercut"] },
+      aggressive: { archetype: "aggressive", stage, maxHealth: 94, minDelay: 700, maxDelay: 1250, reaction: 0.55, defenseBias: 0.25, counterBias: 0.35, aggression: 0.86, moveVariance: 0.28, damageMul: 1.04, preferredPunches: ["hook", "hook", "jab", "uppercut"] },
+    };
+    const selected = { ...base[arch] };
+    selected.minDelay *= 1.15 - (stageMul - 0.85);
+    selected.maxDelay *= 1.12 - (stageMul - 0.85);
+    selected.damageMul *= stageMul;
+    selected.reaction = Math.min(0.92, selected.reaction + (stageMul - 0.85) * 0.35);
+    return selected;
+  }
+
+  private pickPunchType(profile: CPUProfile): PunchType {
+    const idx = Math.floor(Math.random() * profile.preferredPunches.length);
+    return profile.preferredPunches[idx] ?? "jab";
+  }
+
+  private getDominantPlayerPunchRatio(): number {
+    const total = Object.values(this.playerPattern).reduce((a, b) => a + b, 0);
+    if (total < 4) return 0;
+    const dominant = Math.max(...Object.values(this.playerPattern));
+    return Math.min(0.2, dominant / total * 0.25);
+  }
+
+  private applyProgressionResult(): void {
+    if (!this.state.winner) return;
+    const tierBonus = this.state.opponentTier === "elite" ? 28 : this.state.opponentTier === "high" ? 21 : this.state.opponentTier === "mid" ? 15 : 10;
+    if (this.state.winner === "player") {
+      this.state.streak += 1;
+      const streakBonus = this.state.streak >= 3 ? 8 : this.state.streak >= 2 ? 4 : 0;
+      this.state.trophies = Math.min(TROPHY_CEIL, this.state.trophies + tierBonus + streakBonus);
+    } else {
+      this.state.streak = 0;
+      this.state.trophies = Math.max(TROPHY_FLOOR, this.state.trophies - Math.ceil(tierBonus * 0.7));
+    }
+    this.state.opponentTier = this.getTierFromTrophies(this.state.trophies);
+  }
+
+  private randRange(min: number, max: number): number {
+    return min + Math.random() * (max - min);
   }
 }

@@ -168,6 +168,13 @@ export function HUD({ state }: HUDProps) {
   const timeC = state.timeLeft > 20 ? "#fff" : state.timeLeft > 10 ? "#f59e0b" : "#ef4444";
   const showFighting = state.phase === "fighting" || state.phase === "knockdown";
 
+  const archetypeLabel = {
+    tank: "Tank",
+    speedster: "Speedster",
+    balanced: "Balanced",
+    aggressive: "Aggressive",
+  }[state.opponentArchetype];
+
   return (
     <>
       <LowHPVignette health={state.playerHealth} />
@@ -237,7 +244,7 @@ export function HUD({ state }: HUDProps) {
 
         {/* Status row */}
         {showFighting && (
-          <div className="flex items-start justify-between px-4 pt-1">
+          <div className="flex items-start justify-between px-4 pt-1 gap-3">
             <div style={{ minHeight: 28 }}>
               {state.isPlayerBlocking && (
                 <span
@@ -251,6 +258,14 @@ export function HUD({ state }: HUDProps) {
                   🛡 BLOCKING
                 </span>
               )}
+            </div>
+            <div className="text-center">
+              <div className="text-[10px] font-bold uppercase tracking-widest" style={{ color: "rgba(255,255,255,0.45)" }}>
+                {state.opponentTier.toUpperCase()} • {archetypeLabel}
+              </div>
+              <div className="text-[10px] font-bold" style={{ color: "#ffd700" }}>
+                🏆 {state.trophies} {state.streak > 1 ? `• 🔥 ${state.streak}W` : ""}
+              </div>
             </div>
             {state.comboCount > 1 && (
               <div className="text-right">
