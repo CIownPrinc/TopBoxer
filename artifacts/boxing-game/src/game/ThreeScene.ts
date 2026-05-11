@@ -56,6 +56,7 @@ export class ThreeScene {
   private camera!:   THREE.PerspectiveCamera;
   private player!:   FighterMeshes;
   private ai!:       FighterMeshes;
+  private referee!:  FighterMeshes;
 
   // ── Camera ────────────────────────────────────────────────────────────────
   private cameraMode: CameraMode = "third-person";
@@ -91,6 +92,7 @@ export class ThreeScene {
   private aiKO        = false;
   private playerBlock = false;
   private cameraShake = 0;
+  private refereeSignal: "idle" | "counting" | "fight" = "idle";
 
   private hitEffects: HitEffect[] = [];
 
@@ -132,10 +134,13 @@ export class ThreeScene {
 
     this.player = this.buildFighter(false);
     this.ai     = this.buildFighter(true);
+    this.referee = this.buildFighter(false);
     this.player.group.position.set(0, 0, PLAYER_Z);
     this.player.group.rotation.y = Math.PI; // faces -Z toward AI
     this.ai.group.position.set(0, 0, AI_Z);
     this.ai.group.rotation.y = 0;           // faces +Z toward player
+    this.referee.group.position.set(0, 0, -0.5);
+    this.referee.group.scale.setScalar(0.82);
 
     // FP arms (camera children, hidden until FP mode activated)
     this.fpArms = this.buildFPArms();
@@ -201,6 +206,10 @@ export class ThreeScene {
 
     if (right) updateGlove(right, rightState, this.fpRTarget,  0.38);
     else       this.fpRTarget.set( 0.38, -0.38, REST_Z);
+  }
+
+  setRefereeState(phase: "idle" | "counting" | "fight"): void {
+    this.refereeSignal = phase;
   }
 
   resetCamera(): void {
@@ -724,6 +733,17 @@ export class ThreeScene {
 
     this.playerPunch = this.animateFighter(this.player, t, this.playerPunch, this.playerHit, this.playerKO, false, this.playerBlock);
     this.aiPunch     = this.animateFighter(this.ai,     t, this.aiPunch,     this.aiHit,     this.aiKO,     true,  false);
+    const refArmsUp = this.refereeSignal === "fight" ? 1.35 : this.refereeSignal === "counting" ? 0.85 : 0.35;
+    this.referee.leftArm.rotation.x = THREE.MathUtils.lerp(this.referee.leftArm.rotation.x, refArmsUp, 0.11);
+    this.referee.rightArm.rotation.x = THREE.MathUtils.lerp(this.referee.rightArm.rotation.x, refArmsUp, 0.11);
+    this.referee.leftArm.rotation.z = THREE.MathUtils.lerp(this.referee.leftArm.rotation.z, -0.35, 0.11);
+    this.referee.rightArm.rotation.z = THREE.MathUtils.lerp(this.referee.rightArm.rotation.z, 0.35, 0.11);
+    const refWave = this.refereeSignal === "fight" ? 1.25 : this.refereeSignal === "counting" ? 0.65 : 0.15;
+    this.player.group.rotation.y = Math.PI + Math.sin(t * 0.7) * 0.008;
+    this.ai.group.rotation.y = Math.sin(t * 0.7) * -0.008;
+    this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, this.refereeSignal === "counting" ? 60 : 58, 0.08);
+    this.camera.updateProjectionMatrix();
+    this.scene.rotation.y = THREE.MathUtils.lerp(this.scene.rotation.y, Math.sin(t * 0.3) * 0.01 * refWave, 0.06);
 
     this.updateHitEffects();
     this.renderer.render(this.scene, this.camera);

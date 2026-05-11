@@ -12,6 +12,8 @@ export function RoundOverlay({ state, onRestart }: RoundOverlayProps) {
   useEffect(() => {
     if (
       state.phase === "countdown" ||
+      state.phase === "referee-start" ||
+      state.phase === "camera-transition" ||
       state.phase === "round-end" ||
       state.phase === "game-over"
     ) {
@@ -20,7 +22,7 @@ export function RoundOverlay({ state, onRestart }: RoundOverlayProps) {
   }, [state.phase, state.round]);
 
   // ── Countdown ──────────────────────────────────────────────────────────────
-  if (state.phase === "countdown") {
+  if (state.phase === "countdown" || state.phase === "referee-start" || state.phase === "camera-transition") {
     const isFight = state.countdownValue <= 0;
     return (
       <div
@@ -32,7 +34,7 @@ export function RoundOverlay({ state, onRestart }: RoundOverlayProps) {
             className="text-sm font-bold uppercase tracking-widest mb-3"
             style={{ color: "rgba(255,255,255,0.4)", letterSpacing: 5 }}
           >
-            Round {state.round} of {state.maxRounds}
+            {state.phase === "camera-transition" ? "Referee: Take your corners" : `Round ${state.round} of ${state.maxRounds}`}
           </div>
           <div
             key={`${animKey}-${state.countdownValue}`}
@@ -48,7 +50,7 @@ export function RoundOverlay({ state, onRestart }: RoundOverlayProps) {
               lineHeight: 1,
             }}
           >
-            {isFight ? "FIGHT!" : state.countdownValue}
+            {state.phase === "camera-transition" ? "STEP IN" : (isFight ? "FIGHT!" : state.countdownValue)}
           </div>
         </div>
       </div>

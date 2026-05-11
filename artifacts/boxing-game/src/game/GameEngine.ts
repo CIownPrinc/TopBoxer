@@ -5,6 +5,8 @@ export type GamePhase =
   | "camera-setup"
   | "tutorial"
   | "countdown"
+  | "referee-start"
+  | "camera-transition"
   | "fighting"
   | "knockdown"   // 8-count in progress
   | "round-end"
@@ -125,14 +127,14 @@ export class GameEngine {
     this.stopTimers();
     this.state = {
       ...this.defaultState(),
-      phase: "countdown",
+      phase: "referee-start",
       roundsWon: { ...this.state.roundsWon }, // preserve cross-round wins
       trophies: this.state.trophies,
       streak: this.state.streak,
     };
     this.state.opponentTier = this.getTierFromTrophies(this.state.trophies);
     this.state.opponentArchetype = this.pickArchetype(this.state.opponentTier);
-    this.startCountdown();
+    this.startRefereeCountdown();
     this.emit();
   }
 
@@ -200,7 +202,7 @@ export class GameEngine {
     this.listeners.forEach((cb) => cb(this.getState()));
   }
 
-  private startCountdown(): void {
+  private startRefereeCountdown(): void {
     this.state.countdownValue = COUNTDOWN_DURATION;
     this.emit();
     this.countdownTimer = setInterval(() => {
@@ -208,14 +210,15 @@ export class GameEngine {
       if (this.state.countdownValue <= 0) {
         clearInterval(this.countdownTimer!);
         this.countdownTimer = null;
-        this.startFighting();
+        this.state.phase = "camera-transition";
+        this.emit();
       } else {
         this.emit();
       }
     }, 1000);
   }
 
-  private startFighting(): void {
+  beginCombatAfterTransition(): void {
     const profile = this.getCPUProfile();
     this.state.phase = "fighting";
     this.state.playerHealth = MAX_HEALTH;
@@ -374,7 +377,7 @@ export class GameEngine {
     this.state.round++;
     this.state.knockdownCount = { player: 0, ai: 0 };
     this.state.phase = "countdown";
-    this.startCountdown();
+    this.startRefereeCountdown();
     this.emit();
   }
 
