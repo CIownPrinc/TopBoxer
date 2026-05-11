@@ -8,6 +8,9 @@ import {
 export interface HandData {
   left: NormalizedLandmark[] | null;
   right: NormalizedLandmark[] | null;
+  leftConfidence: number;
+  rightConfidence: number;
+  trackingConfidence: number;
   raw: HandLandmarkerResult | null;
 }
 
@@ -95,13 +98,28 @@ export class HandTracker {
   };
 
   private parseResult(result: HandLandmarkerResult): HandData {
-    const data: HandData = { left: null, right: null, raw: result };
+    const data: HandData = {
+      left: null,
+      right: null,
+      leftConfidence: 0,
+      rightConfidence: 0,
+      trackingConfidence: 0,
+      raw: result,
+    };
+    let confSum = 0;
+    let confCount = 0;
     for (let i = 0; i < result.handedness.length; i++) {
       const side = result.handedness[i][0].categoryName.toLowerCase();
+      const confidence = result.handedness[i][0].score ?? 0;
       // MediaPipe returns mirrored labels for selfie camera — swap them
       const actual = side === "left" ? "right" : "left";
       data[actual] = result.landmarks[i];
+      if (actual === "left") data.leftConfidence = confidence;
+      if (actual === "right") data.rightConfidence = confidence;
+      confSum += confidence;
+      confCount++;
     }
+    data.trackingConfidence = confCount > 0 ? confSum / confCount : 0;
     return data;
   }
 

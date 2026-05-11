@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { HandDebugInfo } from "../game/PunchDetector";
 
 interface TutorialStep {
   id: number;
@@ -58,6 +59,8 @@ interface TutorialScreenProps {
   lastPunchType: string | null;
   lastPunchTs: number;
   isBlocking: boolean;
+  leftDebug: HandDebugInfo;
+  rightDebug: HandDebugInfo;
   onAdvance: () => void;
   onSkip: () => void;
 }
@@ -68,6 +71,8 @@ export function TutorialScreen({
   lastPunchType,
   lastPunchTs,
   isBlocking,
+  leftDebug,
+  rightDebug,
   onAdvance,
   onSkip,
 }: TutorialScreenProps) {
@@ -185,6 +190,17 @@ export function TutorialScreen({
           }}
         >
           {completed ? "Great! Moving on..." : `👉 ${current.actionHint}`}
+        </div>
+
+        <div className="mt-4 text-xs" style={{ color: "rgba(255,255,255,0.55)", fontFamily: "monospace" }}>
+          <div>Tracking conf: {Math.round(((leftDebug.trackingConfidence + rightDebug.trackingConfidence) / 2) * 100)}%</div>
+          <div>
+            L: {leftDebug.lastGesture.toUpperCase()} ({leftDebug.speed.toFixed(2)}) ·
+            R: {rightDebug.lastGesture.toUpperCase()} ({rightDebug.speed.toFixed(2)})
+          </div>
+          <div>
+            {completed ? "✅ Gesture recognized" : "Move clearly: small accidental motions are ignored."}
+          </div>
         </div>
 
         {/* Skip */}

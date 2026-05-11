@@ -36,6 +36,10 @@ export interface HandDebugInfo {
   lastGesture: PunchType | "block" | "idle" | "cocking";
   confidence: number;
   blocking: boolean;
+  pos: Vec3;
+  direction: Vec3;
+  stability: number;
+  trackingConfidence: number;
 }
 
 // ── Tuning constants ────────────────────────────────────────────────────────
@@ -99,15 +103,16 @@ export class PunchDetector {
 
   update(
     left:  NormalizedLandmark[] | null,
-    right: NormalizedLandmark[] | null
+    right: NormalizedLandmark[] | null,
+    confidence: { left: number; right: number; tracking: number } = { left: 0, right: 0, tracking: 0 }
   ): void {
     const now = performance.now();
     this.handsVisible.left  = left  !== null;
     this.handsVisible.right = right !== null;
 
-    if (left)  this.processHand("left",  left,  now);
+    if (left)  this.processHand("left",  left,  now, confidence.left);
     else       this.resetHand("left");
-    if (right) this.processHand("right", right, now);
+    if (right) this.processHand("right", right, now, confidence.right);
     else       this.resetHand("right");
 
     this.blockState.left  = left  ? left[0].y  < BLOCK_Y : false;
@@ -115,13 +120,16 @@ export class PunchDetector {
 
     this.hands.left.debug.blocking  = this.blockState.left;
     this.hands.right.debug.blocking = this.blockState.right;
+    this.hands.left.debug.trackingConfidence = confidence.left;
+    this.hands.right.debug.trackingConfidence = confidence.right;
   }
 
   // ── State machine ──────────────────────────────────────────────────────────
   private processHand(
     side: "left" | "right",
     lm: NormalizedLandmark[],
-    now: number
+    now: number,
+    trackingConfidence: number
   ): void {
     const h = this.hands[side];
     const frame = h.smoother.update(lm, now);
@@ -130,6 +138,10 @@ export class PunchDetector {
     // Update debug
     h.debug.speed = frame.speed;
     h.debug.vel   = frame.vel;
+    h.debug.pos   = frame.pos;
+    h.debug.direction = this.unit(frame.vel);
+    h.debug.stability = Math.max(0, 1 - Math.min(1, frame.speed / 1.8));
+    h.debug.trackingConfidence = trackingConfidence;
     h.debug.state = h.state;
 
     switch (h.state) {
@@ -172,7 +184,8 @@ export class PunchDetector {
     // Fast motion → classify and emit punch
     if (speed >= PUNCH_THRESH) {
       const { type, confidence } = this.classify(frame);
-      if (confidence >= EMIT_THRESHOLD && now - h.lastPunchTs >= COOLDOWN_MS) {
+      const confGate = confidence * trackingConfidence;
+      if (confGate >= EMIT_THRESHOLD && now - h.lastPunchTs >= COOLDOWN_MS) {
         this.emit(side, h, type, speed, confidence, now);
       }
     }
@@ -286,6 +299,10 @@ export class PunchDetector {
     h.stateTs   = 0;
     h.debug.speed = 0;
     h.debug.vel   = { x: 0, y: 0, z: 0 };
+    h.debug.pos   = { x: 0, y: 0, z: 0 };
+    h.debug.direction = { x: 0, y: 0, z: 0 };
+    h.debug.stability = 1;
+    h.debug.trackingConfidence = 0;
     h.debug.state = "idle";
     h.debug.lastGesture = "idle";
     h.debug.confidence  = 0;
@@ -302,10 +319,20 @@ export class PunchDetector {
         state: "idle",
         speed: 0,
         vel:   { x: 0, y: 0, z: 0 },
+        pos:   { x: 0, y: 0, z: 0 },
+        direction: { x: 0, y: 0, z: 0 },
         lastGesture: "idle",
         confidence: 0,
         blocking: false,
+        stability: 1,
+        trackingConfidence: 0,
       },
     };
+  }
+
+  private unit(v: Vec3): Vec3 {
+    const m = Math.sqrt(v.x ** 2 + v.y ** 2 + v.z ** 2);
+    if (m < 1e-6) return { x: 0, y: 0, z: 0 };
+    return { x: v.x / m, y: v.y / m, z: v.z / m };
   }
 }
