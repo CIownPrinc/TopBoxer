@@ -17,7 +17,7 @@ import { HandSmoother } from "./HandSmoother";
 import type { SmoothedFrame, Vec3 } from "./HandSmoother";
 
 // ── Exported types ──────────────────────────────────────────────────────────
-export type PunchType = "jab" | "hook" | "uppercut" | "charge";
+export type PunchType = "jab" | "cross" | "hook" | "uppercut" | "charge";
 
 export interface PunchEvent {
   hand: "left" | "right";

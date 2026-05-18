@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { HandTracker } from "../game/HandTracker";
-import { PunchDetector } from "../game/PunchDetector";
 import type { HandDebugInfo } from "../game/PunchDetector";
+import { BoxingInputSystem } from "../input";
 import { createScene } from "../game/SceneManager";
 import type { IScene } from "../game/SceneManager";
 import { GameEngine } from "../game/GameEngine";
@@ -11,7 +10,6 @@ import { StartScreen } from "./StartScreen";
 import { RoundOverlay } from "./RoundOverlay";
 import { TutorialScreen } from "./TutorialScreen";
 import { DebugOverlay } from "./DebugOverlay";
-import type { NormalizedLandmark } from "@mediapipe/tasks-vision";
 
 interface HandOverlayDot { x: number; y: number; hand: "left" | "right" }
 type ShakeLevel = "" | "shake-sm" | "shake-md" | "shake-lg";
@@ -102,8 +100,7 @@ export function GameCanvas() {
   const webcamRef     = useRef<HTMLVideoElement>(null);
   const containerRef  = useRef<HTMLDivElement>(null);
 
-  const trackerRef  = useRef<HandTracker | null>(null);
-  const detectorRef = useRef<PunchDetector | null>(null);
+  const inputRef    = useRef<BoxingInputSystem | null>(null);
   const sceneRef    = useRef<IScene | null>(null);
   const engineRef   = useRef<GameEngine | null>(null);
 
@@ -213,66 +210,46 @@ export function GameCanvas() {
     return () => engine.reset();
   }, [triggerShake]);
 
-  // ── Hand tracker + punch detector ─────────────────────────────────────────
+  // ── Professional webcam boxing input runtime ─────────────────────────────
   useEffect(() => {
-    const tracker  = new HandTracker();
-    const detector = new PunchDetector();
-    trackerRef.current  = tracker;
-    detectorRef.current = detector;
+    const input = new BoxingInputSystem();
+    inputRef.current = input;
 
-    detector.onPunch((event) => {
+    input.onInputEvent((event) => {
       engineRef.current?.playerPunch(event);
       sceneRef.current?.triggerPlayerPunch(event.hand);
     });
 
-    tracker.onTrack((data) => {
-      detector.update(data.left, data.right, {
-        left: data.leftConfidence,
-        right: data.rightConfidence,
-        tracking: data.trackingConfidence,
-      });
-      const dbg = detector.getDebugInfo();
-      const isBlocking = detector.isBlocking();
-
-      // Feed hand data to engine (damage calc) and scene (FP gloves + body anim)
-      engineRef.current?.setPlayerBlocking(isBlocking);
-      sceneRef.current?.setPlayerBlocking(isBlocking);
-      sceneRef.current?.updatePlayerHands(
-        data.left, data.right, dbg.left.state, dbg.right.state,
-      );
-
-      setBothHandsVisible(detector.getBothHandsVisible());
-      setDebugInfo(detector.getDebugInfo());
+    input.onFrame((snapshot) => {
+      const left = snapshot.motion?.hands.left?.landmarks ?? null;
+      const right = snapshot.motion?.hands.right?.landmarks ?? null;
+      engineRef.current?.setPlayerBlocking(snapshot.isBlocking);
+      sceneRef.current?.setPlayerBlocking(snapshot.isBlocking);
+      sceneRef.current?.updatePlayerHands(left, right, snapshot.leftState, snapshot.rightState);
       engineRef.current?.setPlayerTrackingSignal({
-        confidence: data.trackingConfidence,
-        speed: Math.max(dbg.left.speed, dbg.right.speed),
-        blocking: isBlocking,
+        confidence: snapshot.motion?.trackingConfidence ?? 0,
+        speed: Math.max(snapshot.leftDebug.speed, snapshot.rightDebug.speed),
+        blocking: snapshot.isBlocking,
       });
-
-      // Webcam overlay dots
-      const dots: HandOverlayDot[] = [];
-      const addDots = (lm: NormalizedLandmark[] | null, hand: "left" | "right") => {
-        if (!lm) return;
-        [0, 4, 8, 12, 16, 20].forEach((i) => {
-          if (lm[i]) dots.push({ x: (1 - lm[i].x) * 100, y: lm[i].y * 100, hand });
-        });
-      };
-      addDots(data.left,  "left");
-      addDots(data.right, "right");
-      setHandDots(dots);
     });
 
-    return () => { tracker.stopCamera(); tracker.stopTracking(); };
+    input.onDiagnostics((snapshot) => {
+      setBothHandsVisible(snapshot.bothHandsVisible);
+      setDebugInfo({ left: snapshot.leftDebug, right: snapshot.rightDebug });
+      setHandDots(input.getHandDots());
+    });
+
+    return () => input.dispose();
   }, []);
 
 
   // Pause tracking when tab is hidden to improve perf/stability
   useEffect(() => {
     const onVisibility = () => {
-      const tracker = trackerRef.current;
-      if (!tracker) return;
-      if (document.hidden) tracker.stopTracking();
-      else if (cameraReady && trackingReady) tracker.startTracking();
+      const input = inputRef.current;
+      if (!input) return;
+      if (document.hidden) input.stopTracking();
+      else if (cameraReady && trackingReady) input.startTracking();
     };
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
@@ -296,19 +273,20 @@ export function GameCanvas() {
   // ── Handlers ──────────────────────────────────────────────────────────────
   const handleSetupCamera = useCallback(async () => {
     const engine  = engineRef.current;
-    const tracker = trackerRef.current;
-    if (!engine || !tracker || !webcamRef.current) return;
+    const input = inputRef.current;
+    if (!engine || !input || !webcamRef.current) return;
     engine.startCameraSetup();
     setCameraError(null);
     setCameraReady(false);
     setTrackingReady(false);
     setBothHandsVisible(false);
     try {
-      const trackerInit = tracker.init().then(() => setTrackingReady(true));
-      await tracker.startCamera(webcamRef.current);
+      const inputInit = input.init().then(() => setTrackingReady(true));
+      await input.startCamera(webcamRef.current);
       setCameraReady(true);
-      await trackerInit;
-      tracker.startTracking();
+      await inputInit;
+      input.startCalibration();
+      input.startTracking();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Camera error";
       setCameraError(

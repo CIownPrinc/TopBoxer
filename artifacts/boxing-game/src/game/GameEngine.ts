@@ -77,6 +77,7 @@ const TROPHY_CEIL = 500;
 
 const BASE_DMG: Record<string, number> = {
   jab:      7,
+  cross:    11,
   hook:     13,
   uppercut: 10,
   charge:   20,  // charge attack — heavy hitter
@@ -84,6 +85,7 @@ const BASE_DMG: Record<string, number> = {
 // % of damage that gets through when blocking (charge pierces guard more)
 const BLOCK_REDUCTION: Record<string, number> = {
   jab:      0.20,
+  cross:    0.22,
   hook:     0.20,
   uppercut: 0.20,
   charge:   0.45, // charge partially breaks guard
@@ -100,7 +102,7 @@ export class GameEngine {
   private comboTimer: ReturnType<typeof setTimeout> | null = null;
   private aiPunchTimer: ReturnType<typeof setTimeout> | null = null;
   private onAIPunchCb: ((hand: "left" | "right") => void) | null = null;
-  private playerPattern = { jab: 0, hook: 0, uppercut: 0, charge: 0 };
+  private playerPattern: Record<PunchType, number> = { jab: 0, cross: 0, hook: 0, uppercut: 0, charge: 0 };
   private trackingSignal = { confidence: 0, speed: 0, blocking: false };
 
   // ── Public API ──────────────────────────────────────────────────────────────
@@ -415,10 +417,10 @@ export class GameEngine {
     const arch = this.state.opponentArchetype;
     const stageMul = stage === "elite" ? 1.15 : stage === "high" ? 1.05 : stage === "mid" ? 0.95 : 0.85;
     const base: Record<CPUArchetype, CPUProfile> = {
-      tank: { archetype: "tank", stage, maxHealth: 118, minDelay: 1150, maxDelay: 2100, reaction: 0.5, defenseBias: 0.52, counterBias: 0.58, aggression: 0.45, moveVariance: 0.2, damageMul: 1.1, preferredPunches: ["hook", "uppercut", "jab"] },
-      speedster: { archetype: "speedster", stage, maxHealth: 84, minDelay: 650, maxDelay: 1300, reaction: 0.72, defenseBias: 0.34, counterBias: 0.42, aggression: 0.68, moveVariance: 0.26, damageMul: 0.82, preferredPunches: ["jab", "hook", "jab", "uppercut"] },
-      balanced: { archetype: "balanced", stage, maxHealth: 100, minDelay: 900, maxDelay: 1650, reaction: 0.6, defenseBias: 0.43, counterBias: 0.46, aggression: 0.56, moveVariance: 0.22, damageMul: 0.98, preferredPunches: ["jab", "hook", "uppercut"] },
-      aggressive: { archetype: "aggressive", stage, maxHealth: 94, minDelay: 700, maxDelay: 1250, reaction: 0.55, defenseBias: 0.25, counterBias: 0.35, aggression: 0.86, moveVariance: 0.28, damageMul: 1.04, preferredPunches: ["hook", "hook", "jab", "uppercut"] },
+      tank: { archetype: "tank", stage, maxHealth: 118, minDelay: 1150, maxDelay: 2100, reaction: 0.5, defenseBias: 0.52, counterBias: 0.58, aggression: 0.45, moveVariance: 0.2, damageMul: 1.1, preferredPunches: ["hook", "cross", "uppercut", "jab"] },
+      speedster: { archetype: "speedster", stage, maxHealth: 84, minDelay: 650, maxDelay: 1300, reaction: 0.72, defenseBias: 0.34, counterBias: 0.42, aggression: 0.68, moveVariance: 0.26, damageMul: 0.82, preferredPunches: ["jab", "cross", "hook", "jab", "uppercut"] },
+      balanced: { archetype: "balanced", stage, maxHealth: 100, minDelay: 900, maxDelay: 1650, reaction: 0.6, defenseBias: 0.43, counterBias: 0.46, aggression: 0.56, moveVariance: 0.22, damageMul: 0.98, preferredPunches: ["jab", "cross", "hook", "uppercut"] },
+      aggressive: { archetype: "aggressive", stage, maxHealth: 94, minDelay: 700, maxDelay: 1250, reaction: 0.55, defenseBias: 0.25, counterBias: 0.35, aggression: 0.86, moveVariance: 0.28, damageMul: 1.04, preferredPunches: ["hook", "cross", "hook", "jab", "uppercut"] },
     };
     const selected = { ...base[arch] };
     selected.minDelay *= 1.15 - (stageMul - 0.85);
