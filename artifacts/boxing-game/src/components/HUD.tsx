@@ -62,6 +62,7 @@ function HealthBar({
 // ── Power / charge shot overlay ────────────────────────────────────────────────
 const POWER_LABELS: Record<PunchType, { label: string; color: string; big: boolean }> = {
   jab:      { label: "JAB!",       color: "#4a90ff", big: false },
+  cross:    { label: "CROSS!",     color: "#38bdf8", big: false },
   hook:     { label: "HOOK!",      color: "#a78bfa", big: false },
   uppercut: { label: "UPPERCUT!",  color: "#fbbf24", big: false },
   charge:   { label: "⚡ CHARGE!", color: "#ff4a17", big: true  },

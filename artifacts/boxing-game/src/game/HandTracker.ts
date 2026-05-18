@@ -12,6 +12,9 @@ export interface HandData {
   rightConfidence: number;
   trackingConfidence: number;
   raw: HandLandmarkerResult | null;
+  timestampMs: number;
+  videoTimeSec: number;
+  inferenceMs: number;
 }
 
 export type TrackingCallback = (data: HandData) => void;
@@ -21,26 +24,44 @@ export class HandTracker {
   private video: HTMLVideoElement | null = null;
   private running = false;
   private animFrameId = 0;
-  private lastTs = -1;
+  private lastVideoTime = -1;
+  private lastInferenceMs = 0;
+  private targetFps = 30;
   private callbacks: TrackingCallback[] = [];
   private ready = false;
+
+  constructor(targetFps = 30) {
+    this.targetFps = targetFps;
+  }
+
+  setTargetFps(fps: number): void {
+    this.targetFps = Math.max(12, Math.min(60, fps));
+  }
 
   async init(): Promise<void> {
     const vision = await FilesetResolver.forVisionTasks(
       "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm"
     );
-    this.landmarker = await HandLandmarker.createFromOptions(vision, {
+    const options = {
       baseOptions: {
         modelAssetPath:
           "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-        delegate: "GPU",
+        delegate: "GPU" as const,
       },
-      runningMode: "VIDEO",
+      runningMode: "VIDEO" as const,
       numHands: 2,
       minHandDetectionConfidence: 0.42,
       minHandPresenceConfidence: 0.42,
       minTrackingConfidence: 0.42,
-    });
+    };
+    try {
+      this.landmarker = await HandLandmarker.createFromOptions(vision, options);
+    } catch {
+      this.landmarker = await HandLandmarker.createFromOptions(vision, {
+        ...options,
+        baseOptions: { ...options.baseOptions, delegate: "CPU" as const },
+      });
+    }
     this.ready = true;
   }
 
@@ -48,9 +69,9 @@ export class HandTracker {
     this.video = videoEl;
     const stream = await navigator.mediaDevices.getUserMedia({
       video: {
-        width: { ideal: 960, min: 640 },
-        height: { ideal: 540, min: 480 },
-        frameRate: { ideal: 60, min: 24 },
+        width: { ideal: 640, min: 480 },
+        height: { ideal: 480, min: 360 },
+        frameRate: { ideal: this.targetFps, min: 24 },
         facingMode: "user",
       },
       audio: false,
@@ -94,16 +115,25 @@ export class HandTracker {
   private loop = (): void => {
     if (!this.running || !this.landmarker || !this.video) return;
     const now = performance.now();
-    if (now !== this.lastTs && this.video.readyState >= 2) {
-      this.lastTs = now;
+    const minInterval = 1000 / this.targetFps;
+    const videoTime = this.video.currentTime;
+    const hasNewVideoFrame = videoTime !== this.lastVideoTime;
+    if (
+      this.video.readyState >= 2 &&
+      hasNewVideoFrame &&
+      now - this.lastInferenceMs >= minInterval
+    ) {
+      this.lastVideoTime = videoTime;
+      this.lastInferenceMs = now;
+      const start = performance.now();
       const result = this.landmarker.detectForVideo(this.video, now);
-      const data = this.parseResult(result);
+      const data = this.parseResult(result, now, videoTime, performance.now() - start);
       this.callbacks.forEach((cb) => cb(data));
     }
     this.animFrameId = requestAnimationFrame(this.loop);
   };
 
-  private parseResult(result: HandLandmarkerResult): HandData {
+  private parseResult(result: HandLandmarkerResult, timestampMs: number, videoTimeSec: number, inferenceMs: number): HandData {
     const data: HandData = {
       left: null,
       right: null,
@@ -111,6 +141,9 @@ export class HandTracker {
       rightConfidence: 0,
       trackingConfidence: 0,
       raw: result,
+      timestampMs,
+      videoTimeSec,
+      inferenceMs,
     };
     let confSum = 0;
     let confCount = 0;
