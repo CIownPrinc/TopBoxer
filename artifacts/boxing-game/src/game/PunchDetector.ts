@@ -145,7 +145,7 @@ export class PunchDetector {
     h.debug.state = h.state;
 
     switch (h.state) {
-      case "idle":     this.fromIdle(side, h, frame, now);         break;
+      case "idle":     this.fromIdle(side, h, frame, now, trackingConfidence);         break;
       case "cocking":  this.fromCocking(side, h, frame, stateAge, now); break;
       case "punching": if (stateAge > PUNCH_WIN_MS) this.go(h, "cooldown", now); break;
       case "cooldown": if (stateAge > COOLDOWN_MS)  this.go(h, "idle",     now); break;
@@ -158,7 +158,8 @@ export class PunchDetector {
     side: "left" | "right",
     h: PerHand,
     frame: SmoothedFrame,
-    now: number
+    now: number,
+    trackingConfidence: number
   ): void {
     const { speed, vel } = frame;
     if (speed < NOISE_THRESH) {
@@ -182,10 +183,12 @@ export class PunchDetector {
     }
 
     // Fast motion → classify and emit punch
-    if (speed >= PUNCH_THRESH) {
+    const adaptivePunchThreshold = PUNCH_THRESH * (trackingConfidence < 0.55 ? 0.9 : 1);
+    if (speed >= adaptivePunchThreshold) {
       const { type, confidence } = this.classify(frame);
       const confGate = confidence * trackingConfidence;
-      if (confGate >= EMIT_THRESHOLD && now - h.lastPunchTs >= COOLDOWN_MS) {
+      const adaptiveEmitThreshold = EMIT_THRESHOLD * (trackingConfidence < 0.45 ? 0.85 : 1);
+      if (confGate >= adaptiveEmitThreshold && now - h.lastPunchTs >= COOLDOWN_MS) {
         this.emit(side, h, type, speed, confidence, now);
       }
     }

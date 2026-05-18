@@ -96,8 +96,8 @@ PORT=5000 DATABASE_URL=postgres://user:password@localhost:5432/topboxer pnpm --f
 
 | Variable | Description | Required | Example |
 |---|---|---:|---|
-| `PORT` | Port used by `boxing-game` Vite server and `api-server` runtime. | Yes (per process) | `24201` (game), `5000` (api) |
-| `BASE_PATH` | Vite `base` path for `boxing-game` asset routing. | Yes (boxing-game) | `/` |
+| `PORT` | Port used by `boxing-game` Vite server and `api-server` runtime. The game defaults to `24201` for local/Vercel builds if unset. | Yes for api-server; optional for boxing-game | `24201` (game), `5000` (api) |
+| `BASE_PATH` | Vite `base` path for `boxing-game` asset routing. The game defaults to `/` when unset. | Optional (boxing-game) | `/` |
 | `DATABASE_URL` | PostgreSQL connection string used by `api-server` and `lib/db`. | Yes (api-server/db) | `postgres://user:pass@localhost:5432/topboxer` |
 | `NODE_ENV` | Runtime mode (`development`/`production`), set in some scripts. | Recommended | `development` |
 | `REPL_ID` | Replit-specific var that toggles dev plugins in Vite config. | Optional | `your-repl-id` |
@@ -135,9 +135,11 @@ pnpm run build
 Build and preview only the game:
 
 ```bash
-PORT=24201 BASE_PATH=/ pnpm --filter @workspace/boxing-game run build
-PORT=24201 BASE_PATH=/ pnpm --filter @workspace/boxing-game run serve
+pnpm --filter @workspace/boxing-game run build
+PORT=24201 pnpm --filter @workspace/boxing-game run serve
 ```
+
+The production game build writes static assets to `artifacts/boxing-game/dist`, which is the output directory configured for Vercel in `vercel.json`.
 
 Build and start only the API server:
 

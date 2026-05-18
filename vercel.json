@@ -1,0 +1,5 @@
+{
+  "installCommand": "pnpm install --frozen-lockfile",
+  "buildCommand": "pnpm --filter @workspace/boxing-game run build",
+  "outputDirectory": "artifacts/boxing-game/dist"
+}

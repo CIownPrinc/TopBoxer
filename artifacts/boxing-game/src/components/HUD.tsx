@@ -182,6 +182,8 @@ export function HUD({ state }: HUDProps) {
   const fmt  = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
   const timeC = state.timeLeft > 20 ? "#fff" : state.timeLeft > 10 ? "#f59e0b" : "#ef4444";
   const showFighting = state.phase === "fighting" || state.phase === "knockdown";
+  const trackingPct = Math.round((state.trackingQuality ?? 0) * 100);
+  const trackingColor = trackingPct >= 75 ? "#22c55e" : trackingPct >= 45 ? "#f59e0b" : "#ef4444";
 
   const archetypeLabel = {
     tank: "Tank",
@@ -224,6 +226,11 @@ export function HUD({ state }: HUDProps) {
             <div className="text-xs font-bold tracking-widest uppercase mb-1" style={{ color: "rgba(255,255,255,0.4)" }}>
               Round {state.round}/{state.maxRounds}
             </div>
+            {showFighting && (
+              <div className="text-[10px] font-bold tracking-widest uppercase" style={{ color: trackingColor }}>
+                Tracking {trackingPct}%
+              </div>
+            )}
             <div
               className="text-2xl font-black tabular-nums"
               style={{ color: timeC, fontFamily: "monospace", textShadow: `0 0 10px ${timeC}`, lineHeight: 1 }}

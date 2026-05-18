@@ -119,7 +119,7 @@ export function GameCanvas() {
     isPlayerBlocking: false, isAIBlocking: false,
     lastPunchType: null, lastPunchForce: 0, lastPunchTs: 0,
     comboCount: 0, tutorialStep: 0,
-    opponentArchetype: "balanced", opponentTier: "early", trophies: 0, streak: 0,
+    opponentArchetype: "balanced", opponentTier: "early", trophies: 0, streak: 0, trackingQuality: 0,
   });
 
   const [cameraReady, setCameraReady]     = useState(false);
@@ -265,6 +265,18 @@ export function GameCanvas() {
     return () => { tracker.stopCamera(); tracker.stopTracking(); };
   }, []);
 
+
+  // Pause tracking when tab is hidden to improve perf/stability
+  useEffect(() => {
+    const onVisibility = () => {
+      const tracker = trackerRef.current;
+      if (!tracker) return;
+      if (document.hidden) tracker.stopTracking();
+      else if (cameraReady && trackingReady) tracker.startTracking();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [cameraReady, trackingReady]);
   // ── KO sync to scene ──────────────────────────────────────────────────────
   useEffect(() => {
     if (gameState.knockedDown === "player") sceneRef.current?.setPlayerKO(true);
