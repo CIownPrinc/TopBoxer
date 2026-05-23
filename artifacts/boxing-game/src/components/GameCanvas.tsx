@@ -245,6 +245,9 @@ export function GameCanvas() {
       // Integrate new dynamic dodge handling here!
       if (snapshot.dodge) {
         engineRef.current?.playerDodge(snapshot.dodge);
+        sceneRef.current?.setPlayerDodge(snapshot.dodge);
+      } else {
+        sceneRef.current?.setPlayerDodge(null);
       }
     });
 

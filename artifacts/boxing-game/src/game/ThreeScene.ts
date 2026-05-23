@@ -96,6 +96,17 @@ export class ThreeScene {
 
   private hitEffects: HitEffect[] = [];
 
+  // Dynamic Camera Controller State properties for premium arcade feel
+  private camCurrentPos = new THREE.Vector3().copy(TP_POS);
+  private camTargetPos  = new THREE.Vector3().copy(TP_POS);
+  private camCurrentLookAt = new THREE.Vector3().copy(TP_LOOKAT);
+  private camTargetLookAt  = new THREE.Vector3().copy(TP_LOOKAT);
+  private camBaseFov = 58;
+  private camCurrentFov = 58;
+  private camCurrentRoll = 0;
+  private camTargetRoll = 0;
+  private playerDodgeType: string | null = null;
+
   // ── Public API ─────────────────────────────────────────────────────────────
   tryInit(canvas: HTMLCanvasElement): boolean {
     try { this.init(canvas); return true; } catch { return false; }
@@ -240,6 +251,7 @@ export class ThreeScene {
   triggerPlayerHit(force = 0.5): void {
     this.playerHit  = 1;
     this.cameraShake = Math.max(this.cameraShake, force * 1.1);
+    this.camCurrentFov = this.camBaseFov - 12 * force; // Instant impact zoom!
     this.spawnHit(new THREE.Vector3(0, 1.6, PLAYER_Z));
     if (this.cameraMode === "first-person") {
       this.fpFlashMat.color.setHex(0xff4400);
@@ -249,6 +261,7 @@ export class ThreeScene {
 
   triggerAIHit(force = 0.5): void {
     this.aiHit = 1;
+    this.camCurrentFov = this.camBaseFov - 10 * force; // Instant impact zoom!
     this.spawnHit(new THREE.Vector3(0, 1.6, AI_Z));
     // Slow-mo + white flash for strong hits
     if (force >= 0.70) {
@@ -263,6 +276,11 @@ export class ThreeScene {
   setPlayerKO(v: boolean): void      { this.playerKO    = v; }
   setAIKO(v: boolean): void          { this.aiKO        = v; }
   setPlayerBlocking(v: boolean): void { this.playerBlock = v; }
+  setPlayerDodge(type: string | null): void { this.playerDodgeType = type; }
+  setPlayerExhausted(v: boolean): void {}
+  setAIExhausted(v: boolean): void {}
+  setPlayerStunned(v: boolean): void {}
+  setAIStunned(v: boolean): void {}
 
   startRendering(): void {
     if (this.running) return;
@@ -648,24 +666,48 @@ export class ThreeScene {
       this.fpFlashMat.opacity = this.flashOpacity;
     }
 
-    // ── Camera update ──────────────────────────────────────────────────────
+    // ── Camera update (Dynamic Arcade Camera Solver) ──────────────────────────
+    // Smoothly decay/damp FOV back to base FOV (impact zoom recovery)
+    this.camCurrentFov = THREE.MathUtils.lerp(this.camCurrentFov, this.camBaseFov, Math.min(1, animDelta * 9.5));
+    this.camera.fov = this.camCurrentFov;
+    this.camera.updateProjectionMatrix();
+
     if (this.cameraMode === "third-person") {
+      // Calculate target camera position (Base pos + subtle breathing sway)
+      this.camTargetPos.set(
+        TP_POS.x + Math.sin(t * 0.20) * 0.14,
+        TP_POS.y + Math.sin(t * 0.33) * 0.09,
+        TP_POS.z
+      );
+
+      // Dodge Screen Roll and Tilt Translation (rolls in direction of slip, translates opposite)
+      if (this.playerDodgeType === "slip-left" || this.playerDodgeType === "dodge-left") {
+        this.camTargetPos.x += 0.32;
+        this.camTargetRoll = 0.045; // Roll camera right (+2.5 degrees)
+      } else if (this.playerDodgeType === "slip-right" || this.playerDodgeType === "dodge-right") {
+        this.camTargetPos.x -= 0.32;
+        this.camTargetRoll = -0.045; // Roll camera left (-2.5 degrees)
+      } else {
+        this.camTargetRoll = 0;
+      }
+
+      // Add high-frequency camera shake offset
       if (this.cameraShake > 0) {
         const s = this.cameraShake;
-        this.camera.position.set(
-          TP_POS.x + (Math.random() - 0.5) * s * 0.33,
-          TP_POS.y + (Math.random() - 0.5) * s * 0.22,
-          TP_POS.z + (Math.random() - 0.5) * s * 0.10,
-        );
-        this.cameraShake = Math.max(0, this.cameraShake - 0.065);
-      } else {
-        this.camera.position.set(
-          TP_POS.x + Math.sin(t * 0.20) * 0.14,
-          TP_POS.y + Math.sin(t * 0.33) * 0.09,
-          TP_POS.z,
-        );
+        this.camTargetPos.x += (Math.random() - 0.5) * s * 0.33;
+        this.camTargetPos.y += (Math.random() - 0.5) * s * 0.22;
+        this.camTargetPos.z += (Math.random() - 0.5) * s * 0.10;
+        this.cameraShake = Math.max(0, this.cameraShake - animDelta * 3.8); // Frame-rate independent decay
       }
+
+      // Critically damped spring interpolation for smooth motion sickness suppression
+      const lerpF = Math.min(1, animDelta * 9.2);
+      this.camCurrentPos.lerp(this.camTargetPos, lerpF);
+      this.camCurrentRoll = THREE.MathUtils.lerp(this.camCurrentRoll, this.camTargetRoll, lerpF);
+
+      this.camera.position.copy(this.camCurrentPos);
       this.camera.lookAt(TP_LOOKAT);
+      this.camera.rotation.z += this.camCurrentRoll; // Apply screen tilt
 
     } else if (this.cameraMode === "transitioning") {
       const elapsed = now - this.fpTransStart;
@@ -674,6 +716,10 @@ export class ThreeScene {
 
       this.camera.position.lerpVectors(this.fpTransStartPos, FP_POS, easedT);
       this.camera.quaternion.slerpQuaternions(this.fpTransStartQuat, this.fpTargetQuat, easedT);
+
+      // Synchronize internal controller starting positions
+      this.camCurrentPos.copy(this.camera.position);
+      this.camCurrentLookAt.copy(FP_LOOKAT);
 
       if (rawT >= 1) {
         this.cameraMode = "first-person";
@@ -684,32 +730,51 @@ export class ThreeScene {
       }
 
     } else { // first-person
-      if (this.cameraShake > 0) {
-        const s = this.cameraShake * 0.55;
-        this.camera.position.set(
-          FP_POS.x + (Math.random() - 0.5) * s * 0.14,
-          FP_POS.y + (Math.random() - 0.5) * s * 0.11,
-          FP_POS.z + (Math.random() - 0.5) * s * 0.07,
-        );
-        this.cameraShake = Math.max(0, this.cameraShake - 0.065);
-      } else {
-        // Subtle breathing sway
-        this.camera.position.set(
-          FP_POS.x + Math.sin(t * 0.38) * 0.022,
-          FP_POS.y + Math.sin(t * 0.62) * 0.016,
-          FP_POS.z,
-        );
-      }
-      this.camera.lookAt(new THREE.Vector3(
+      this.camTargetPos.set(
+        FP_POS.x + Math.sin(t * 0.38) * 0.022,
+        FP_POS.y + Math.sin(t * 0.62) * 0.016,
+        FP_POS.z
+      );
+
+      this.camTargetLookAt.set(
         FP_LOOKAT.x + Math.sin(t * 0.28) * 0.013,
         FP_LOOKAT.y + Math.sin(t * 0.45) * 0.009,
-        FP_LOOKAT.z,
-      ));
+        FP_LOOKAT.z
+      );
+
+      // First-person dodge response
+      if (this.playerDodgeType === "slip-left" || this.playerDodgeType === "dodge-left") {
+        this.camTargetPos.x += 0.20;
+        this.camTargetRoll = 0.038;
+      } else if (this.playerDodgeType === "slip-right" || this.playerDodgeType === "dodge-right") {
+        this.camTargetPos.x -= 0.20;
+        this.camTargetRoll = -0.038;
+      } else {
+        this.camTargetRoll = 0;
+      }
+
+      // First-person camera shake
+      if (this.cameraShake > 0) {
+        const s = this.cameraShake * 0.55;
+        this.camTargetPos.x += (Math.random() - 0.5) * s * 0.14;
+        this.camTargetPos.y += (Math.random() - 0.5) * s * 0.11;
+        this.camTargetPos.z += (Math.random() - 0.5) * s * 0.07;
+        this.cameraShake = Math.max(0, this.cameraShake - animDelta * 3.8);
+      }
+
+      const lerpF = Math.min(1, animDelta * 9.2);
+      this.camCurrentPos.lerp(this.camTargetPos, lerpF);
+      this.camCurrentLookAt.lerp(this.camTargetLookAt, lerpF);
+      this.camCurrentRoll = THREE.MathUtils.lerp(this.camCurrentRoll, this.camTargetRoll, lerpF);
+
+      this.camera.position.copy(this.camCurrentPos);
+      this.camera.lookAt(this.camCurrentLookAt);
+      this.camera.rotation.z += this.camCurrentRoll;
 
       // Smooth FP gloves toward their targets
-      const lerpF = Math.min(1, animDelta * 22);
-      this.fpLCurrent.lerp(this.fpLTarget, lerpF);
-      this.fpRCurrent.lerp(this.fpRTarget, lerpF);
+      const gloveLerpF = Math.min(1, animDelta * 22);
+      this.fpLCurrent.lerp(this.fpLTarget, gloveLerpF);
+      this.fpRCurrent.lerp(this.fpRTarget, gloveLerpF);
 
       this.fpArms.leftGlove.position.copy(this.fpLCurrent);
       this.fpArms.rightGlove.position.copy(this.fpRCurrent);

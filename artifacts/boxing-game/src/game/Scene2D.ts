@@ -56,6 +56,7 @@ export class Scene2D {
   setPlayerKO(v: boolean): void { this.pState.isKO = v; if (!v) this.pState.koAngle = 0; }
   setAIKO(v: boolean): void { this.aState.isKO = v; if (!v) this.aState.koAngle = 0; }
   setPlayerBlocking(v: boolean): void { this.pState.blocking = v; }
+  setPlayerDodge(_type: string | null): void {}
   setPlayerExhausted(v: boolean): void { this.pState.isExhausted = v; }
   setAIExhausted(v: boolean): void { this.aState.isExhausted = v; }
   setPlayerStunned(v: boolean): void { this.pState.isStunned = v; }

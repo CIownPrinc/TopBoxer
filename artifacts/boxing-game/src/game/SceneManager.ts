@@ -11,6 +11,11 @@ export interface IScene {
   setPlayerKO(v: boolean): void;
   setAIKO(v: boolean): void;
   setPlayerBlocking(v: boolean): void;
+  setPlayerDodge(type: string | null): void;
+  setPlayerExhausted(v: boolean): void;
+  setAIExhausted(v: boolean): void;
+  setPlayerStunned(v: boolean): void;
+  setAIStunned(v: boolean): void;
   startRendering(): void;
   stopRendering(): void;
   resize(w: number, h: number): void;
@@ -74,6 +79,11 @@ class NoOpScene implements IScene {
   setPlayerKO(_v: boolean): void {}
   setAIKO(_v: boolean): void {}
   setPlayerBlocking(_v: boolean): void {}
+  setPlayerDodge(_type: string | null): void {}
+  setPlayerExhausted(_v: boolean): void {}
+  setAIExhausted(_v: boolean): void {}
+  setPlayerStunned(_v: boolean): void {}
+  setAIStunned(_v: boolean): void {}
   startRendering(): void {}
   stopRendering(): void {}
   resize(_w: number, _h: number): void {}
