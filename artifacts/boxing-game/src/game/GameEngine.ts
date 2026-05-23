@@ -1,4 +1,5 @@
 import type { PunchEvent, PunchType } from "./PunchDetector";
+import { HitDetector } from "./HitDetector";
 
 export type GamePhase =
   | "start"
@@ -142,6 +143,58 @@ export class GameEngine {
   private playerPattern: Record<PunchType, number> = { jab: 0, cross: 0, hook: 0, uppercut: 0, charge: 0 };
   private trackingSignal = { confidence: 0, speed: 0, blocking: false };
 
+  private hitDetector = new HitDetector();
+  private playerActivePunches: Array<{ id: string; type: string; hand: "left" | "right"; force: number; t: number; strikeId: string }> = [];
+  private aiActivePunches: Array<{ id: string; type: string; hand: "left" | "right"; force: number; t: number; strikeId: string }> = [];
+
+  private getPunchLogicalCoords(
+    owner: "player" | "ai",
+    type: string,
+    hand: "left" | "right",
+    t: number
+  ): { x: number; y: number; z: number } {
+    const isPlayer = owner === "player";
+    const dir = isPlayer ? -1 : 1;
+    const startZ = isPlayer ? 2.2 : -2.2;
+    const side = hand === "left" ? -1 : 1;
+
+    // 1. Z-coordinate (extension along centerline)
+    const maxReach = 4.7; // logical distance between fighters (2.5 - -2.2 = 4.7)
+    // Glove extends and retracts following a sine wave
+    const ext = Math.sin(t * Math.PI);
+    const z = startZ + dir * maxReach * ext;
+
+    // 2. X-coordinate (horizontal curve)
+    let x = side * 0.38;
+    if (type === "hook") {
+      // Hooks curve outward before wrapping inward to the center (X = 0)
+      const sweep = Math.sin(t * Math.PI);
+      const wide = Math.sin(t * Math.PI * 2); // sweeps wide then returns
+      x = side * 0.38 * (1 - sweep) + side * 0.45 * wide;
+    } else {
+      // Jabs/Crosses/Uppercuts travel straight to centerline
+      x = side * 0.38 * (1 - ext);
+    }
+
+    // 3. Y-coordinate (vertical sweep)
+    let y = 1.35;
+    if (type === "uppercut") {
+      // Uppercuts drop low during wind-up (t < 0.3) and rise high at impact (t = 0.5)
+      if (t < 0.3) {
+        const drop = Math.sin(t * (Math.PI / 0.3));
+        y = 1.35 - 0.35 * drop;
+      } else {
+        const rise = Math.sin((t - 0.3) * (Math.PI / 0.7));
+        y = 1.0 + 0.85 * rise;
+      }
+    } else {
+      // Jabs/Crosses are relatively flat
+      y = 1.35 + 0.15 * ext;
+    }
+
+    return { x, y, z };
+  }
+
   // ── Public API ──────────────────────────────────────────────────────────────
   onState(cb: StateListener): void { this.listeners.push(cb); }
   onHit(cb: HitEvent): void { this.hitListeners.push(cb); }
@@ -202,7 +255,15 @@ export class GameEngine {
     this.state.lastPunchForce = event.force;
     this.state.lastPunchTs = Date.now();
     
-    this.applyDamage("player", event.type, event.force);
+    const strikeId = `player_${event.hand}_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
+    this.playerActivePunches.push({
+      id: `player_${event.hand}`,
+      type: event.type,
+      hand: event.hand,
+      force: event.force,
+      t: 0,
+      strikeId
+    });
     this.playerPattern[event.type] = (this.playerPattern[event.type] ?? 0) + 1;
 
     // Combo tracking
@@ -247,6 +308,9 @@ export class GameEngine {
 
   reset(): void {
     this.stopTimers();
+    this.playerActivePunches = [];
+    this.aiActivePunches = [];
+    this.hitDetector.reset();
     this.state = this.defaultState();
     this.emit();
   }
@@ -322,6 +386,9 @@ export class GameEngine {
     this.state.knockedDown = null;
 
     // Reset combat state properties
+    this.playerActivePunches = [];
+    this.aiActivePunches = [];
+    this.hitDetector.reset();
     this.state.playerStamina = 100;
     this.state.aiStamina = 100;
     this.state.playerExhausted = false;
@@ -361,6 +428,65 @@ export class GameEngine {
 
     // 1. Process Hit-Stop frame freeze
     if (now < this.hitStopEndTs) return;
+
+    // ── Update Guard Block positions physically ───────────────────────────────
+    const aiBlocking = this.state.aiCombatState === "blocking";
+    this.hitDetector.updateHurtboxPosition(
+      "ai_guard",
+      0,
+      1.55,
+      aiBlocking ? -2.2 : -99.0
+    );
+
+    const playerBlocking = this.state.playerCombatState === "blocking";
+    this.hitDetector.updateHurtboxPosition(
+      "player_guard",
+      0,
+      1.55,
+      playerBlocking ? 2.2 : 99.0
+    );
+
+    // ── Update Active Physical Player Punches ──────────────────────────────────
+    for (let i = this.playerActivePunches.length - 1; i >= 0; i--) {
+      const p = this.playerActivePunches[i];
+      p.t += 0.125; // 8 tick extension/retraction (~133ms)
+      
+      if (p.t >= 1.0) {
+        this.hitDetector.updateHitbox(p.id, 0, 0, 0, false, null);
+        this.hitDetector.clearStrikeHistory(p.strikeId);
+        this.playerActivePunches.splice(i, 1);
+      } else {
+        const coords = this.getPunchLogicalCoords("player", p.type, p.hand, p.t);
+        const active = p.t >= 0.25 && p.t <= 0.65;
+        this.hitDetector.updateHitbox(p.id, coords.x, coords.y, coords.z, active, p.strikeId);
+      }
+    }
+
+    // ── Update Active Physical AI Punches ──────────────────────────────────────
+    for (let i = this.aiActivePunches.length - 1; i >= 0; i--) {
+      const p = this.aiActivePunches[i];
+      p.t += 0.125;
+      
+      if (p.t >= 1.0) {
+        this.hitDetector.updateHitbox(p.id, 0, 0, 0, false, null);
+        this.hitDetector.clearStrikeHistory(p.strikeId);
+        this.aiActivePunches.splice(i, 1);
+      } else {
+        const coords = this.getPunchLogicalCoords("ai", p.type, p.hand, p.t);
+        const active = p.t >= 0.25 && p.t <= 0.65;
+        this.hitDetector.updateHitbox(p.id, coords.x, coords.y, coords.z, active, p.strikeId);
+      }
+    }
+
+    // ── Physical Collision Engine Query ────────────────────────────────────────
+    this.hitDetector.checkCollisions((attacker, strikeId, hurtboxId, hurtboxType, hitPoint) => {
+      const queue = attacker === "player" ? this.playerActivePunches : this.aiActivePunches;
+      const punch = queue.find((p) => p.strikeId === strikeId);
+      if (!punch) return;
+
+      const isBlocked = hurtboxType === "guard";
+      this.applyDamage(attacker, punch.type, punch.force, isBlocked);
+    });
 
     // 2. Process Player Dodge state decay
     if (this.state.playerCombatState === "dodging" && now >= this.state.playerDodgeEndTs) {
@@ -458,7 +584,16 @@ export class GameEngine {
       if (Math.random() < profile.aggression || Math.random() < counterWindow) {
         const reactionVariance = 1 - (Math.random() * 0.22 - 0.11);
         const force = (0.32 + Math.random() * 0.58) * profile.damageMul * reactionVariance;
-        this.applyDamage("ai", type, Math.min(1, Math.max(0.2, force)));
+        
+        const strikeId = `ai_${hand}_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
+        this.aiActivePunches.push({
+          id: `ai_${hand}`,
+          type: type,
+          hand: hand as "left" | "right",
+          force: Math.min(1, Math.max(0.2, force)),
+          t: 0,
+          strikeId
+        });
       }
       
       if (willBlock && Math.random() < profile.reaction) {
@@ -476,7 +611,8 @@ export class GameEngine {
   private applyDamage(
     attacker: "player" | "ai",
     punchType: string,
-    force: number
+    force: number,
+    isPhysicalBlock = false
   ): void {
     if (this.state.phase !== "fighting") return;
     const target = attacker === "player" ? "ai" : "player";
@@ -505,9 +641,9 @@ export class GameEngine {
     const base = BASE_DMG[punchType] ?? 7;
     const raw = base * (0.4 + force * 0.6) * counterMultiplier * exhaustionMul;
     
-    const isBlocking = target === "player"
+    const isBlocking = isPhysicalBlock || (target === "player"
       ? this.state.playerCombatState === "blocking"
-      : this.state.aiCombatState === "blocking";
+      : this.state.aiCombatState === "blocking");
 
     let finalDamage = raw;
     let staminaDamage = 0;
