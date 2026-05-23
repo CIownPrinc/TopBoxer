@@ -12,6 +12,12 @@ export class Scene2D {
   private pState = this.makeFighter();
   private aState = this.makeFighter();
 
+  // Glove trail buffers for premium visual punch trails
+  private trails = {
+    player: { left: [] as { x: number; y: number }[], right: [] as { x: number; y: number }[] },
+    ai: { left: [] as { x: number; y: number }[], right: [] as { x: number; y: number }[] },
+  };
+
   // Crowd dots
   private crowd: { x: number; y: number; r: number; h: string }[] = [];
 
@@ -22,6 +28,8 @@ export class Scene2D {
       isKO: false,
       blocking: false,
       koAngle: 0,
+      isExhausted: false,
+      isStunned: false,
     };
   }
 
@@ -48,6 +56,10 @@ export class Scene2D {
   setPlayerKO(v: boolean): void { this.pState.isKO = v; if (!v) this.pState.koAngle = 0; }
   setAIKO(v: boolean): void { this.aState.isKO = v; if (!v) this.aState.koAngle = 0; }
   setPlayerBlocking(v: boolean): void { this.pState.blocking = v; }
+  setPlayerExhausted(v: boolean): void { this.pState.isExhausted = v; }
+  setAIExhausted(v: boolean): void { this.aState.isExhausted = v; }
+  setPlayerStunned(v: boolean): void { this.pState.isStunned = v; }
+  setAIStunned(v: boolean): void { this.aState.isStunned = v; }
   transitionToFirstPerson(): void {}
   updatePlayerHands(): void {}
   resetCamera(): void {}
@@ -186,7 +198,7 @@ export class Scene2D {
     // Scale proportionally
     const scale = Math.min(W / 800, H / 600) * 0.9;
     const totalH = 180 * scale;
-    const breathe = Math.sin(t * 1.5) * 2;
+    const breathe = s.isExhausted ? Math.sin(t * 0.8) * 4.2 : Math.sin(t * 1.5) * 2;
     const hitOffX = s.hitAnim > 0 ? (isAI ? -1 : 1) * s.hitAnim * 14 : 0;
 
     const trunkC = isAI ? "#aa0000" : "#0044cc";
@@ -211,7 +223,13 @@ export class Scene2D {
     }
 
     ctx.save();
-    ctx.translate(hitOffX, breathe * 0.4);
+    if (s.isExhausted) {
+      // Translate slightly down/forward and rotate to hunch body
+      ctx.translate(hitOffX + (isAI ? 12 : -12) * scale, breathe * 0.5 + 8 * scale);
+      ctx.rotate(isAI ? -0.14 : 0.14);
+    } else {
+      ctx.translate(hitOffX, breathe * 0.4);
+    }
 
     const bodyW  = 44 * scale;
     const headR  = 22 * scale;
@@ -236,9 +254,10 @@ export class Scene2D {
     ctx.fillRect(cx - 9 * scale, torsoY - 16 * scale, 18 * scale, 18 * scale);
 
     // ── Head ──
+    const headShake = s.isStunned ? Math.sin(t * 26.0) * 3 * scale : 0;
     ctx.fillStyle = skinC;
     ctx.beginPath();
-    ctx.arc(cx, torsoY - headR - 4 * scale, headR, 0, Math.PI * 2);
+    ctx.arc(cx + headShake, torsoY - headR - 4 * scale, headR, 0, Math.PI * 2);
     ctx.fill();
 
     // Face shading
@@ -297,9 +316,38 @@ export class Scene2D {
     const leftExt  = s.punchAnim?.hand === "left"  ? punchExt : 0;
     const rightExt = s.punchAnim?.hand === "right" ? punchExt : 0;
 
+    // ── Update and Render Glove Trails ──
+    const fighterKey = isAI ? "ai" : "player";
+    const leftTrail = this.trails[fighterKey].left;
+    const rightTrail = this.trails[fighterKey].right;
+
     // Left glove
     const lgx = cx - 38 * scale + leftExt  * guardDir;
     const lgy = armY + blockY;
+
+    if (s.punchAnim?.hand === "left") {
+      leftTrail.push({ x: lgx, y: lgy });
+      if (leftTrail.length > 7) leftTrail.shift();
+    } else {
+      if (leftTrail.length > 0) leftTrail.shift();
+    }
+
+    if (leftTrail.length > 1) {
+      ctx.save();
+      ctx.strokeStyle = gloveC;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      for (let i = 1; i < leftTrail.length; i++) {
+        ctx.beginPath();
+        ctx.moveTo(leftTrail[i - 1].x, leftTrail[i - 1].y);
+        ctx.lineTo(leftTrail[i].x, leftTrail[i].y);
+        ctx.lineWidth = i * 2.8 * scale; // Tapering trail width!
+        ctx.globalAlpha = (i / leftTrail.length) * 0.38; // Tapering transparency!
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
     ctx.fillStyle = gloveC;
     ctx.beginPath();
     ctx.ellipse(lgx, lgy, 15 * scale, 13 * scale, 0, 0, Math.PI * 2);
@@ -313,6 +361,30 @@ export class Scene2D {
     // Right glove
     const rgx = cx + 38 * scale - rightExt * guardDir;
     const rgy = armY + blockY;
+
+    if (s.punchAnim?.hand === "right") {
+      rightTrail.push({ x: rgx, y: rgy });
+      if (rightTrail.length > 7) rightTrail.shift();
+    } else {
+      if (rightTrail.length > 0) rightTrail.shift();
+    }
+
+    if (rightTrail.length > 1) {
+      ctx.save();
+      ctx.strokeStyle = gloveC;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      for (let i = 1; i < rightTrail.length; i++) {
+        ctx.beginPath();
+        ctx.moveTo(rightTrail[i - 1].x, rightTrail[i - 1].y);
+        ctx.lineTo(rightTrail[i].x, rightTrail[i].y);
+        ctx.lineWidth = i * 2.8 * scale;
+        ctx.globalAlpha = (i / rightTrail.length) * 0.38;
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
     ctx.fillStyle = gloveC;
     ctx.beginPath();
     ctx.ellipse(rgx, rgy, 15 * scale, 13 * scale, 0, 0, Math.PI * 2);

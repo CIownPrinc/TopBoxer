@@ -269,7 +269,7 @@ export function GameCanvas() {
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, [cameraReady, trackingReady]);
-  // ── KO sync to scene ──────────────────────────────────────────────────────
+  // ── KO, Stun & Exhaustion sync to scene ───────────────────────────────────
   useEffect(() => {
     if (gameState.knockedDown === "player") sceneRef.current?.setPlayerKO(true);
     if (gameState.knockedDown === "ai")     sceneRef.current?.setAIKO(true);
@@ -277,7 +277,30 @@ export function GameCanvas() {
       sceneRef.current?.setPlayerKO(false);
       sceneRef.current?.setAIKO(false);
     }
-  }, [gameState.knockedDown, gameState.phase]);
+
+    const scene = sceneRef.current;
+    if (scene) {
+      if (typeof (scene as any).setPlayerExhausted === "function") {
+        (scene as any).setPlayerExhausted(gameState.playerExhausted);
+      }
+      if (typeof (scene as any).setAIExhausted === "function") {
+        (scene as any).setAIExhausted(gameState.aiExhausted);
+      }
+      if (typeof (scene as any).setPlayerStunned === "function") {
+        (scene as any).setPlayerStunned(gameState.playerCombatState === "stunned");
+      }
+      if (typeof (scene as any).setAIStunned === "function") {
+        (scene as any).setAIStunned(gameState.aiCombatState === "stunned");
+      }
+    }
+  }, [
+    gameState.knockedDown,
+    gameState.phase,
+    gameState.playerExhausted,
+    gameState.aiExhausted,
+    gameState.playerCombatState,
+    gameState.aiCombatState,
+  ]);
 
   useEffect(() => {
     if (gameState.phase === "referee-start") sceneRef.current?.setRefereeState("counting");
