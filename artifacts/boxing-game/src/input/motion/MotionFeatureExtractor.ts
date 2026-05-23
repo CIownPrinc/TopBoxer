@@ -1,7 +1,6 @@
 import type { NormalizedLandmark } from "@mediapipe/tasks-vision";
-import { AlphaBetaVec3Filter } from "../smoothing/AlphaBetaFilter";
+import { Kalman3DFilter } from "../smoothing/KalmanFilter";
 import { MotionRingBuffer } from "./MotionRingBuffer";
-import { OneEuroVec3Filter } from "../smoothing/OneEuroFilter";
 import type { HandMotionSample, HandQuality, HandSide, InputCalibration, MotionFrame, RawHandFrame, Vec3 } from "../types";
 import type { InputSystemConfig } from "../tuning/defaultInputConfig";
 
@@ -11,8 +10,7 @@ function unit(v: Vec3): Vec3 { const m = Math.sqrt(v.x ** 2 + v.y ** 2 + v.z ** 
 function ratios(v: Vec3): { lateral: number; vertical: number; forward: number } { const m = Math.max(1e-6, Math.sqrt(v.x ** 2 + v.y ** 2 + v.z ** 2)); return { lateral: Math.abs(v.x) / m, vertical: Math.abs(v.y) / m, forward: Math.abs(v.z) / m }; }
 
 interface PerHandFilters {
-  oneEuro: OneEuroVec3Filter;
-  alphaBeta: AlphaBetaVec3Filter;
+  kalman: Kalman3DFilter;
   buffer: MotionRingBuffer;
   lastVelocity: Vec3;
   lastTs: number;
@@ -66,18 +64,20 @@ export class MotionFeatureExtractor {
   private extractHand(side: HandSide, landmarks: NormalizedLandmark[], confidence: number, timestampMs: number, calibration: InputCalibration): HandMotionSample {
     const f = this.filters[side];
     const rawPosition = wrist(landmarks);
-    const smoothedPosition = f.oneEuro.update(rawPosition, timestampMs);
-    const filtered = f.alphaBeta.update(smoothedPosition, timestampMs);
-    f.buffer.push(filtered.position, timestampMs);
-    const velocity = f.buffer.velocity();
+    
+    // Update the 3D Kinematic Kalman Filter
+    const kalmanState = f.kalman.update(rawPosition, timestampMs, confidence);
+    
+    const smoothedPosition = kalmanState.position;
+    const velocity = kalmanState.velocity;
+    const acceleration = kalmanState.acceleration;
     const speed = Math.sqrt(velocity.x ** 2 + velocity.y ** 2 + velocity.z ** 2);
-    const dt = f.lastTs > 0 ? Math.max(0.001, (timestampMs - f.lastTs) / 1000) : 1 / 30;
-    const acceleration = { x: (velocity.x - f.lastVelocity.x) / dt, y: (velocity.y - f.lastVelocity.y) / dt, z: (velocity.z - f.lastVelocity.z) / dt };
+    
     f.lastVelocity = velocity;
     f.lastTs = timestampMs;
 
     const guard = side === "left" ? calibration.guard.leftGuard : calibration.guard.rightGuard;
-    const distanceFromGuard = dist(filtered.position, guard);
+    const distanceFromGuard = dist(smoothedPosition, guard);
     const reach = side === "left" ? calibration.reach.leftReach : calibration.reach.rightReach;
     const r = ratios(velocity);
     const quality: HandQuality = {
@@ -94,8 +94,8 @@ export class MotionFeatureExtractor {
       timestampMs,
       rawPosition,
       calibratedPosition: rawPosition,
-      smoothedPosition: filtered.position,
-      predictedPosition: f.alphaBeta.predict(Math.min(this.config.smoothing.maxPredictionMs, confidence > 0.55 ? 34 : 16)),
+      smoothedPosition,
+      predictedPosition: f.kalman.predict(Math.min(this.config.smoothing.maxPredictionMs, confidence > 0.55 ? 34 : 16)),
       velocity,
       smoothedVelocity: velocity,
       acceleration,
@@ -113,8 +113,7 @@ export class MotionFeatureExtractor {
 
   private makeFilters(): PerHandFilters {
     return {
-      oneEuro: new OneEuroVec3Filter(this.config.smoothing.oneEuro.minCutoff, this.config.smoothing.oneEuro.beta, this.config.smoothing.oneEuro.derivativeCutoff),
-      alphaBeta: new AlphaBetaVec3Filter(this.config.smoothing.alphaBeta.alpha, this.config.smoothing.alphaBeta.beta),
+      kalman: new Kalman3DFilter(),
       buffer: new MotionRingBuffer(this.config.smoothing.velocityWindowMs),
       lastVelocity: { x: 0, y: 0, z: 0 },
       lastTs: 0,
