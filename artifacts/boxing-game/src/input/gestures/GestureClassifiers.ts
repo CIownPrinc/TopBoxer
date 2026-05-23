@@ -1,60 +1,36 @@
 import type { HandDebugInfo, PunchType } from "../../game/PunchDetector";
 import type { DefenseType, GestureCandidate, HandMotionSample, HandSide, MotionFrame } from "../types";
 import type { InputSystemConfig } from "../tuning/defaultInputConfig";
+import { PunchClassifierEngine } from "./PunchClassifierEngine";
 
 function clamp01(v: number): number { return Math.max(0, Math.min(1, v)); }
 function scoreOver(v: number, min: number, range = min): number { return clamp01((v - min) / Math.max(0.001, range)); }
 
 export class PunchClassifier {
-  constructor(private readonly config: InputSystemConfig) {}
+  private readonly engines: Record<"left" | "right", PunchClassifierEngine>;
+
+  constructor(private readonly config: InputSystemConfig) {
+    this.engines = {
+      left: new PunchClassifierEngine("left"),
+      right: new PunchClassifierEngine("right"),
+    };
+  }
 
   classify(hand: HandMotionSample, debug: HandDebugInfo): GestureCandidate | null {
-    if (debug.lastGesture === "charge") {
-      return this.candidate("charge", hand, debug.confidence, hand.extensionRatio, "legacy charge state");
+    const engine = this.engines[hand.side];
+    const candidate = engine.update(hand, hand.timestampMs);
+
+    // Sync state machine telemetry back to the legacy UI debug structures
+    const legacyState = engine.getLegacyState();
+    debug.state = legacyState;
+
+    const telemetry = engine.getTelemetry(hand);
+    if (telemetry.lastPunchType) {
+      debug.lastGesture = telemetry.lastPunchType;
+      debug.confidence = telemetry.lastPunchConfidence;
     }
 
-    const forwardUp = Math.max(0, -hand.velocity.y);
-    const downward = Math.max(0, hand.velocity.y);
-    const lateral = Math.abs(hand.velocity.x);
-    const dominantStraight = forwardUp >= lateral * 0.85;
-    const cfg = this.config.punches;
-    const straightType: PunchType = this.isLeadHand(hand.side) ? "jab" : "cross";
-
-    const candidates: Array<{ type: PunchType; score: number; reason: string }> = [];
-    const straightCfg = straightType === "jab" ? cfg.jab : cfg.cross;
-    if (dominantStraight) {
-      const s = scoreOver(hand.speed, straightCfg.minSpeed, 0.35)
-        * scoreOver(hand.extensionRatio, straightCfg.minExtension, 0.35)
-        * clamp01(1 - Math.max(0, hand.lateralRatio - (straightType === "jab" ? cfg.jab.maxLateralRatio : 0.82)))
-        * hand.quality.confidence;
-      candidates.push({ type: straightType, score: s, reason: "straight extension from guard" });
-    }
-
-    const hookScore = scoreOver(hand.speed, cfg.hook.minSpeed, 0.35)
-      * scoreOver(hand.lateralRatio, cfg.hook.minLateralRatio, 0.35)
-      * clamp01(1 - Math.max(0, hand.forwardRatio - cfg.hook.maxForwardRatio))
-      * hand.quality.confidence;
-    candidates.push({ type: "hook", score: hookScore, reason: "lateral velocity dominant" });
-
-    const upperScore = scoreOver(hand.speed, cfg.uppercut.minSpeed, 0.35)
-      * scoreOver(downward / Math.max(0.001, hand.speed), cfg.uppercut.minUpwardRatio, 0.35)
-      * scoreOver(hand.extensionRatio, cfg.uppercut.minExtension, 0.35)
-      * hand.quality.confidence;
-    candidates.push({ type: "uppercut", score: upperScore, reason: "rising/vertical attack" });
-
-    const best = candidates.sort((a, b) => b.score - a.score)[0];
-    const minConfidence = best.type === "jab" ? cfg.jab.minConfidence : best.type === "cross" ? cfg.cross.minConfidence : best.type === "hook" ? cfg.hook.minConfidence : cfg.uppercut.minConfidence;
-    if (best.score < minConfidence) return null;
-    return this.candidate(best.type, hand, best.score, hand.extensionRatio, best.reason);
-  }
-
-  private isLeadHand(side: HandSide): boolean {
-    // Default calibration stance is orthodox: left jab, right cross.
-    return side === "left";
-  }
-
-  private candidate(type: PunchType, hand: HandMotionSample, confidence: number, strength: number, debugReason: string): GestureCandidate {
-    return { id: `${type}-${hand.side}-${hand.timestampMs}`, type, hand: hand.side, timestampMs: hand.timestampMs, confidence: clamp01(confidence), strength: clamp01(strength), durationMs: 0, debugReason };
+    return candidate;
   }
 }
 
