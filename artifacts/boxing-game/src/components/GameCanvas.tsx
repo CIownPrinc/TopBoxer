@@ -117,6 +117,16 @@ export function GameCanvas() {
     lastPunchType: null, lastPunchForce: 0, lastPunchTs: 0,
     comboCount: 0, tutorialStep: 0,
     opponentArchetype: "balanced", opponentTier: "early", trophies: 0, streak: 0, trackingQuality: 0,
+    playerStamina: 100,
+    aiStamina: 100,
+    playerExhausted: false,
+    aiExhausted: false,
+    playerCombatState: "idle",
+    aiCombatState: "idle",
+    playerStunEndTs: 0,
+    aiStunEndTs: 0,
+    playerDodgeEndTs: 0,
+    playerDodgeIFrameEndTs: 0,
   });
 
   const [cameraReady, setCameraReady]     = useState(false);
@@ -231,6 +241,11 @@ export function GameCanvas() {
         speed: Math.max(snapshot.leftDebug.speed, snapshot.rightDebug.speed),
         blocking: snapshot.isBlocking,
       });
+      
+      // Integrate new dynamic dodge handling here!
+      if (snapshot.dodge) {
+        engineRef.current?.playerDodge(snapshot.dodge);
+      }
     });
 
     input.onDiagnostics((snapshot) => {

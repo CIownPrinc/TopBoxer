@@ -12,6 +12,8 @@ export type GamePhase =
   | "round-end"
   | "game-over";
 
+export type CombatState = "idle" | "stunned" | "guard-broken" | "dodging" | "blocking";
+
 export interface GameState {
   phase: GamePhase;
   round: number;
@@ -40,6 +42,18 @@ export interface GameState {
   trophies: number;
   streak: number;
   trackingQuality: number;
+
+  // New Combat FSM properties
+  playerStamina: number;
+  aiStamina: number;
+  playerExhausted: boolean;
+  aiExhausted: boolean;
+  playerCombatState: CombatState;
+  aiCombatState: CombatState;
+  playerStunEndTs: number;
+  aiStunEndTs: number;
+  playerDodgeEndTs: number;
+  playerDodgeIFrameEndTs: number;
 }
 
 type CPUArchetype = "tank" | "speedster" | "balanced" | "aggressive";
@@ -90,6 +104,24 @@ const BLOCK_REDUCTION: Record<string, number> = {
   uppercut: 0.20,
   charge:   0.45, // charge partially breaks guard
 };
+
+// Stamina cost parameters
+const STAMINA_COSTS: Record<string, number> = {
+  jab:      10,
+  cross:    15,
+  hook:     20,
+  uppercut: 25,
+  charge:   30,
+};
+
+// Stagger hit-stun durations (in ms)
+const STUN_DURATIONS: Record<string, number> = {
+  jab:      250,
+  cross:    380,
+  hook:     450,
+  uppercut: 600,
+  charge:   800,
+};
 // ─────────────────────────────────────────────────────────────────────────────
 
 export class GameEngine {
@@ -101,6 +133,11 @@ export class GameEngine {
   private eightCountTimer: ReturnType<typeof setInterval> | null = null;
   private comboTimer: ReturnType<typeof setTimeout> | null = null;
   private aiPunchTimer: ReturnType<typeof setTimeout> | null = null;
+  
+  // High-frequency 60 FPS tick timer
+  private tickTimer: ReturnType<typeof setInterval> | null = null;
+  private hitStopEndTs = 0;
+
   private onAIPunchCb: ((hand: "left" | "right") => void) | null = null;
   private playerPattern: Record<PunchType, number> = { jab: 0, cross: 0, hook: 0, uppercut: 0, charge: 0 };
   private trackingSignal = { confidence: 0, speed: 0, blocking: false };
@@ -143,9 +180,28 @@ export class GameEngine {
 
   playerPunch(event: PunchEvent): void {
     if (this.state.phase !== "fighting") return;
+    
+    // Ignore input if player is currently stunned, guard-broken, or dodging
+    if (this.state.playerCombatState === "stunned" || 
+        this.state.playerCombatState === "guard-broken" || 
+        this.state.playerCombatState === "dodging") {
+      return;
+    }
+
+    const cost = STAMINA_COSTS[event.type] ?? 10;
+    
+    if (this.state.playerStamina < cost) {
+      // Exhausted attack!
+      this.state.playerExhausted = true;
+      this.state.playerStamina = 0;
+    } else {
+      this.state.playerStamina -= cost;
+    }
+
     this.state.lastPunchType = event.type;
     this.state.lastPunchForce = event.force;
     this.state.lastPunchTs = Date.now();
+    
     this.applyDamage("player", event.type, event.force);
     this.playerPattern[event.type] = (this.playerPattern[event.type] ?? 0) + 1;
 
@@ -156,6 +212,28 @@ export class GameEngine {
       this.state.comboCount = 0;
       this.emit();
     }, 1500);
+  }
+
+  playerDodge(type: string): void {
+    if (this.state.phase !== "fighting") return;
+    
+    // Can only dodge from idle or blocking
+    if (this.state.playerCombatState !== "idle" && this.state.playerCombatState !== "blocking") {
+      return;
+    }
+
+    const cost = 20; // 20 stamina cost to dodge
+    if (this.state.playerStamina < cost) {
+      return; // Ignore dodge if not enough stamina
+    }
+
+    this.state.playerStamina -= cost;
+    this.state.playerCombatState = "dodging";
+    const now = Date.now();
+    this.state.playerDodgeEndTs = now + 520;       // Dodge active duration (520ms)
+    this.state.playerDodgeIFrameEndTs = now + 350; // Dynamic core I-Frames (350ms)
+    
+    this.emit();
   }
 
   setPlayerBlocking(blocking: boolean): void {
@@ -200,6 +278,18 @@ export class GameEngine {
       trophies: 0,
       streak: 0,
       trackingQuality: 0,
+
+      // New default properties
+      playerStamina: 100,
+      aiStamina: 100,
+      playerExhausted: false,
+      aiExhausted: false,
+      playerCombatState: "idle",
+      aiCombatState: "idle",
+      playerStunEndTs: 0,
+      aiStunEndTs: 0,
+      playerDodgeEndTs: 0,
+      playerDodgeIFrameEndTs: 0,
     };
   }
 
@@ -230,8 +320,22 @@ export class GameEngine {
     this.state.aiHealth = profile.maxHealth;
     this.state.timeLeft = ROUND_DURATION;
     this.state.knockedDown = null;
+
+    // Reset combat state properties
+    this.state.playerStamina = 100;
+    this.state.aiStamina = 100;
+    this.state.playerExhausted = false;
+    this.state.aiExhausted = false;
+    this.state.playerCombatState = "idle";
+    this.state.aiCombatState = "idle";
+    this.state.playerStunEndTs = 0;
+    this.state.aiStunEndTs = 0;
+    this.state.playerDodgeEndTs = 0;
+    this.state.playerDodgeIFrameEndTs = 0;
+
     this.emit();
     this.startRoundTimer();
+    this.startTickTimer(); // Start 60 FPS update loop
     this.scheduleAIPunch();
   }
 
@@ -244,6 +348,79 @@ export class GameEngine {
     }, 1000);
   }
 
+  private startTickTimer(): void {
+    if (this.tickTimer) clearInterval(this.tickTimer);
+    this.tickTimer = setInterval(() => {
+      this.engineTick();
+    }, 16.67);
+  }
+
+  private engineTick(): void {
+    if (this.state.phase !== "fighting") return;
+    const now = Date.now();
+
+    // 1. Process Hit-Stop frame freeze
+    if (now < this.hitStopEndTs) return;
+
+    // 2. Process Player Dodge state decay
+    if (this.state.playerCombatState === "dodging" && now >= this.state.playerDodgeEndTs) {
+      this.state.playerCombatState = this.state.isPlayerBlocking ? "blocking" : "idle";
+    }
+
+    // 3. Process Player Stun / Guard Break state decay
+    if ((this.state.playerCombatState === "stunned" || this.state.playerCombatState === "guard-broken") && now >= this.state.playerStunEndTs) {
+      this.state.playerCombatState = this.state.isPlayerBlocking ? "blocking" : "idle";
+    }
+
+    // 4. Process AI Stun / Guard Break state decay
+    if ((this.state.aiCombatState === "stunned" || this.state.aiCombatState === "guard-broken") && now >= this.state.aiStunEndTs) {
+      this.state.aiCombatState = this.state.isAIBlocking ? "blocking" : "idle";
+    }
+
+    // 5. Update Player & AI blocking states based on tracking inputs
+    if (this.state.playerCombatState === "idle" && this.state.isPlayerBlocking) {
+      this.state.playerCombatState = "blocking";
+    } else if (this.state.playerCombatState === "blocking" && !this.state.isPlayerBlocking) {
+      this.state.playerCombatState = "idle";
+    }
+
+    if (this.state.aiCombatState === "idle" && this.state.isAIBlocking) {
+      this.state.aiCombatState = "blocking";
+    } else if (this.state.aiCombatState === "blocking" && !this.state.isAIBlocking) {
+      this.state.aiCombatState = "idle";
+    }
+
+    // 6. Stamina Regeneration
+    // Player
+    if (this.state.playerCombatState === "idle") {
+      const regen = this.state.playerExhausted ? 0.7 : 1.4; // Halved regen when exhausted
+      this.state.playerStamina = Math.min(100, this.state.playerStamina + regen);
+    } else if (this.state.playerCombatState === "blocking") {
+      const regen = this.state.playerExhausted ? 0.2 : 0.4;
+      this.state.playerStamina = Math.min(100, this.state.playerStamina + regen);
+    }
+
+    // Recover from player exhaustion when stamina reaches 100
+    if (this.state.playerExhausted && this.state.playerStamina >= 100) {
+      this.state.playerExhausted = false;
+    }
+
+    // AI
+    if (this.state.aiCombatState === "idle") {
+      const regen = this.state.aiExhausted ? 0.7 : 1.4;
+      this.state.aiStamina = Math.min(100, this.state.aiStamina + regen);
+    } else if (this.state.aiCombatState === "blocking") {
+      const regen = this.state.aiExhausted ? 0.2 : 0.4;
+      this.state.aiStamina = Math.min(100, this.state.aiStamina + regen);
+    }
+
+    if (this.state.aiExhausted && this.state.aiStamina >= 100) {
+      this.state.aiExhausted = false;
+    }
+
+    this.emit();
+  }
+
   private scheduleAIPunch(): void {
     if (this.state.phase !== "fighting") return;
     const profile = this.getCPUProfile();
@@ -251,25 +428,46 @@ export class GameEngine {
     const delay = this.randRange(profile.minDelay, profile.maxDelay) * (1 + Math.random() * profile.moveVariance);
     this.aiPunchTimer = setTimeout(() => {
       if (this.state.phase !== "fighting") return;
+      
+      // If AI is currently stunned, guard-broken, or in knockdown/referee phase, skip and reschedule
+      if (this.state.aiCombatState === "stunned" || this.state.aiCombatState === "guard-broken") {
+        this.scheduleAIPunch();
+        return;
+      }
+
       const hand = Math.random() > 0.5 ? "left" : "right";
       this.onAIPunchCb?.(hand);
+      
+      const type = this.pickPunchType(profile);
+      const cost = STAMINA_COSTS[type] ?? 10;
+      
+      if (this.state.aiStamina < cost) {
+        // Exhausted AI Punch
+        this.state.aiExhausted = true;
+        this.state.aiStamina = 0;
+      } else {
+        this.state.aiStamina -= cost;
+      }
+
       const speedBias = Math.min(0.18, this.trackingSignal.speed * 0.08);
       const reliabilityBias = Math.max(0, (this.trackingSignal.confidence - 0.5) * 0.12);
       const willBlock = Math.random() < profile.defenseBias + adaptBias + speedBias + reliabilityBias;
       this.state.isAIBlocking = willBlock;
       const counterWindow = profile.counterBias + adaptBias * 0.5 + (this.trackingSignal.blocking ? 0.12 : 0);
+      
       if (Math.random() < profile.aggression || Math.random() < counterWindow) {
-        const type = this.pickPunchType(profile);
         const reactionVariance = 1 - (Math.random() * 0.22 - 0.11);
         const force = (0.32 + Math.random() * 0.58) * profile.damageMul * reactionVariance;
         this.applyDamage("ai", type, Math.min(1, Math.max(0.2, force)));
       }
+      
       if (willBlock && Math.random() < profile.reaction) {
         setTimeout(() => {
           this.state.isAIBlocking = false;
           this.emit();
         }, this.randRange(250, 520));
       }
+      
       this.emit();
       this.scheduleAIPunch();
     }, delay);
@@ -282,17 +480,83 @@ export class GameEngine {
   ): void {
     if (this.state.phase !== "fighting") return;
     const target = attacker === "player" ? "ai" : "player";
+    const now = Date.now();
+
+    // 1. Dodge Invulnerability Frame check
+    if (target === "player" && this.state.playerCombatState === "dodging" && now <= this.state.playerDodgeIFrameEndTs) {
+      // Negate damage completely! Trigger 0-force hit callback representing dodge
+      this.hitListeners.forEach((cb) => cb("player", 0));
+      this.emit();
+      return;
+    }
+
+    // 2. Counter-Hit Check
+    const isTargetIdleOrBlocking = target === "player"
+      ? (this.state.playerCombatState === "idle" || this.state.playerCombatState === "blocking")
+      : (this.state.aiCombatState === "idle" || this.state.aiCombatState === "blocking");
+
+    const isCounterHit = !isTargetIdleOrBlocking;
+    const counterMultiplier = isCounterHit ? 1.5 : 1.0;
+
+    // Apply 50% damage penalty if attacker is exhausted
+    const isAttackerExhausted = attacker === "player" ? this.state.playerExhausted : this.state.aiExhausted;
+    const exhaustionMul = isAttackerExhausted ? 0.5 : 1.0;
+
     const base = BASE_DMG[punchType] ?? 7;
-    const raw = base * (0.4 + force * 0.6);
-    const isBlocking =
-      target === "player" ? this.state.isPlayerBlocking : this.state.isAIBlocking;
-    const blockPct = BLOCK_REDUCTION[punchType] ?? 0.20;
-    const final = Math.round((isBlocking ? raw * blockPct : raw) * 10) / 10;
+    const raw = base * (0.4 + force * 0.6) * counterMultiplier * exhaustionMul;
+    
+    const isBlocking = target === "player"
+      ? this.state.playerCombatState === "blocking"
+      : this.state.aiCombatState === "blocking";
+
+    let finalDamage = raw;
+    let staminaDamage = 0;
+
+    if (isBlocking) {
+      const blockPct = BLOCK_REDUCTION[punchType] ?? 0.20;
+      finalDamage = raw * blockPct;
+      
+      // Blocker takes stamina damage equal to rawDamage * 1.5
+      staminaDamage = Math.round(raw * 1.5);
+      
+      if (target === "player") {
+        this.state.playerStamina = Math.max(0, this.state.playerStamina - staminaDamage);
+        if (this.state.playerStamina <= 0) {
+          this.state.playerCombatState = "guard-broken";
+          this.state.playerStunEndTs = now + 1000; // 1 second stun on guard break
+        }
+      } else {
+        this.state.aiStamina = Math.max(0, this.state.aiStamina - staminaDamage);
+        if (this.state.aiStamina <= 0) {
+          this.state.aiCombatState = "guard-broken";
+          this.state.aiStunEndTs = now + 1000;
+        }
+      }
+    } else {
+      // Unblocked strike triggers Hit-Stun stagger state!
+      const stunBase = STUN_DURATIONS[punchType] ?? 250;
+      const stunDuration = Math.round(stunBase * (isCounterHit ? 1.3 : 1.0));
+      
+      if (target === "player") {
+        this.state.playerCombatState = "stunned";
+        this.state.playerStunEndTs = now + stunDuration;
+      } else {
+        this.state.aiCombatState = "stunned";
+        this.state.aiStunEndTs = now + stunDuration;
+      }
+    }
+
+    const final = Math.round(finalDamage * 10) / 10;
 
     if (target === "ai") {
       this.state.aiHealth = Math.max(0, this.state.aiHealth - final);
     } else {
       this.state.playerHealth = Math.max(0, this.state.playerHealth - final);
+    }
+
+    // 3. Process Hit-Stop on high force or counter-hits
+    if (force >= 0.70 || isCounterHit) {
+      this.hitStopEndTs = now + 100;
     }
 
     this.hitListeners.forEach((cb) => cb(target, force));
@@ -343,6 +607,7 @@ export class GameEngine {
     this.state.phase = "fighting";
     this.emit();
     this.startRoundTimer();
+    this.startTickTimer(); // Resume tick loop!
     this.scheduleAIPunch();
   }
 
@@ -363,7 +628,6 @@ export class GameEngine {
     const plDmg = MAX_HEALTH - this.state.playerHealth;
     if (aiDmg > plDmg) this.state.roundsWon.player++;
     else if (plDmg > aiDmg) this.state.roundsWon.ai++;
-    // exact tie: no point awarded (judge's call)
     this.state.knockedDown = null;
     this.emit();
     setTimeout(() => this.advanceRound(), ROUND_END_MS);
@@ -392,6 +656,7 @@ export class GameEngine {
     if (this.eightCountTimer) { clearInterval(this.eightCountTimer); this.eightCountTimer = null; }
     if (this.aiPunchTimer) { clearTimeout(this.aiPunchTimer); this.aiPunchTimer = null; }
     if (this.comboTimer) { clearTimeout(this.comboTimer); this.comboTimer = null; }
+    if (this.tickTimer) { clearInterval(this.tickTimer); this.tickTimer = null; } // Clear 60 FPS loop!
   }
 
   private getTierFromTrophies(trophies: number): CPUStage {
