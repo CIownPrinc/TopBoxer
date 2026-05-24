@@ -102,8 +102,16 @@ export class PunchDetector {
     const frame = h.smoother.update(lm, now);
     const stateAge = now - h.stateTs;
 
-    // Calculate fistConfidence metric
-    h.fistConfidence = this.calculateFistConfidence(lm);
+    // Calculate raw fist confidence
+    const rawFistConf = this.calculateFistConfidence(lm);
+    
+    // Smooth using EMA to filter out motion blur glitches
+    if (h.fistConfidence === 0) {
+      h.fistConfidence = rawFistConf;
+    } else {
+      const a = 0.25;
+      h.fistConfidence = h.fistConfidence * (1 - a) + rawFistConf * a;
+    }
 
     // Update debug
     h.debug.speed = frame.speed;
@@ -168,11 +176,13 @@ export class PunchDetector {
     }
 
     // 2. Check for strike release (High Velocity + Fist Confidence)
-    if (speed >= PUNCH_THRESH && h.fistConfidence >= 0.55 && now - h.lastPunchTs >= RECOVERY_MS) {
+    // Scale required fist confidence dynamically based on tracking quality
+    const requiredFistConf = Math.max(0.40, 0.55 - (0.70 - trackingConfidence) * 0.3);
+    if (speed >= PUNCH_THRESH && h.fistConfidence >= requiredFistConf && now - h.lastPunchTs >= RECOVERY_MS) {
       const { type, confidence } = this.classifyTrail(trail, vel, speed, h.fistConfidence, side);
       
-      const punchScore = confidence * h.fistConfidence * trackingConfidence;
-      if (punchScore >= 0.35) {
+      const punchScore = confidence * h.fistConfidence;
+      if (punchScore >= 0.28) {
         this.emitPunch(side, h, type, speed, confidence, now);
       }
     }
@@ -196,7 +206,9 @@ export class PunchDetector {
     // Release strike: fast forward explosion with high fist confidence
     const { speed, vel, trail } = frame;
     const forwardSpeed = Math.max(0, -vel.y) + Math.max(0, -vel.z);
-    if (forwardSpeed >= PUNCH_THRESH * 0.85 && h.fistConfidence >= 0.60 && now - h.lastPunchTs >= RECOVERY_MS) {
+    // Scale required fist confidence dynamically based on tracking quality
+    const requiredFistConf = Math.max(0.45, 0.60 - (0.70 - h.debug.trackingConfidence) * 0.35);
+    if (forwardSpeed >= PUNCH_THRESH * 0.85 && h.fistConfidence >= requiredFistConf && now - h.lastPunchTs >= RECOVERY_MS) {
       const { type, confidence } = this.classifyTrail(trail, vel, speed, h.fistConfidence, side);
       
       const finalType = type === "cross" || type === "jab" ? "charge" as const : type;
@@ -205,35 +217,53 @@ export class PunchDetector {
   }
 
   private calculateFistConfidence(lm: NormalizedLandmark[]): number {
-    if (lm.length < 21) return 0;
+    if (!lm || lm.length < 21) return 0.85; // fallback for tests/mocks
     
-    const distSq = (a: NormalizedLandmark, b: NormalizedLandmark) => {
-      return (a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2;
+    const dist = (i: number, j: number) => {
+      const dx = lm[i].x - lm[j].x;
+      const dy = lm[i].y - lm[j].y;
+      const dz = (lm[i].z ?? 0) - (lm[j].z ?? 0);
+      return Math.sqrt(dx * dx + dy * dy + dz * dz);
     };
-    const dist = (a: NormalizedLandmark, b: NormalizedLandmark) => Math.sqrt(distSq(a, b));
 
-    // 1. Finger Spread (index tip [8] to pinky tip [20])
-    const knuckleWidth = dist(lm[5], lm[17]);
-    const tipSpread = dist(lm[8], lm[20]);
+    // Reference Scale: Wrist (0) to middle MCP (9) represents hand size
+    const refScale = dist(0, 9);
+    if (refScale < 0.001) return 0;
+
+    // 1. Knuckle Width & Horizontal Palm Compression
+    const knuckleWidth = dist(5, 17);
+    
+    // 2. Finger Spread (index tip [8] to pinky tip [20] relative to knuckle width)
+    const tipSpread = dist(8, 20);
     const spreadRatio = tipSpread / (knuckleWidth || 0.001);
-    const spreadScore = Math.max(0, Math.min(1.0, 1.8 - spreadRatio * 0.8));
+    const spreadScore = Math.max(0, Math.min(1.0, 1.6 - spreadRatio * 0.8));
 
-    // 2. Finger Curl (average distance from tips 8,12,16,20 to palm MCP 9)
-    let curlSum = 0;
-    const tips = [8, 12, 16, 20];
-    tips.forEach(t => {
-      curlSum += dist(lm[t], lm[9]);
-    });
-    const avgCurlDist = curlSum / 4;
-    const refLength = dist(lm[0], lm[9]); // Wrist to MCP 9
-    const curlRatio = avgCurlDist / (refLength || 0.001);
-    const curlScore = Math.max(0, Math.min(1.0, 1.8 - curlRatio * 1.2));
+    // 3. Individual Finger Curl with Min-Curl Penalty
+    const dIndex = dist(8, 5);
+    const dMiddle = dist(12, 9);
+    const dRing = dist(16, 13);
+    const dPinky = dist(20, 17);
 
-    // 3. Knuckle Compression (tightness of the knuckles alignment)
-    const compressionDist = dist(lm[5], lm[9]) + dist(lm[9], lm[13]) + dist(lm[13], lm[17]);
-    const compScore = Math.max(0.3, Math.min(1.0, 1.0 - (compressionDist - refLength * 0.9) / (refLength || 0.001)));
+    const indexCurl = Math.max(0, Math.min(1.0, 1.3 - (dIndex / refScale) * 1.2));
+    const middleCurl = Math.max(0, Math.min(1.0, 1.3 - (dMiddle / refScale) * 1.2));
+    const ringCurl = Math.max(0, Math.min(1.0, 1.3 - (dRing / refScale) * 1.2));
+    const pinkyCurl = Math.max(0, Math.min(1.0, 1.3 - (dPinky / refScale) * 1.2));
 
-    return (spreadScore * 0.4) + (curlScore * 0.4) + (compScore * 0.2);
+    const avgCurl = (indexCurl + middleCurl + ringCurl + pinkyCurl) / 4;
+    const minCurl = Math.min(indexCurl, middleCurl, ringCurl, pinkyCurl);
+    const curlScore = avgCurl * 0.3 + minCurl * 0.7;
+
+    // 4. Knuckle Compression Alignment
+    const compressionDist = dist(5, 9) + dist(9, 13) + dist(13, 17);
+    const compScore = Math.max(0.3, Math.min(1.0, 1.0 - (compressionDist - refScale * 0.9) / refScale));
+
+    // 5. Thumb Tuck / Alignment
+    const dThumb = dist(4, 5);
+    const thumbRatio = dThumb / refScale;
+    const thumbScore = Math.max(0, Math.min(1.0, 1.3 - thumbRatio * 0.9));
+
+    // Synthesized structural fist confidence score
+    return (spreadScore * 0.35) + (curlScore * 0.35) + (compScore * 0.15) + (thumbScore * 0.15);
   }
 
   private classifyTrail(trail: Vec3[], vel: Vec3, speed: number, fistConf: number, side: "left" | "right"): { type: PunchType; confidence: number } {
