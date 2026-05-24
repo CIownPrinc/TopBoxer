@@ -145,8 +145,8 @@ export class ThreeScene {
     this.renderer.setSize(w, h);
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x07071a);
-    this.scene.fog = new THREE.FogExp2(0x08081e, 0.036);
+    this.scene.background = new THREE.Color(0x05060A);
+    this.scene.fog = new THREE.FogExp2(0x05060A, 0.036);
 
     this.camera = new THREE.PerspectiveCamera(58, w / h, 0.05, 120);
     this.camera.position.copy(TP_POS);
@@ -522,7 +522,7 @@ export class ThreeScene {
     const gloveColor = isAI ? 0xCCFF00 : 0x0033cc;
     const skinColor  = isAI ? 0x0D0E15 : 0xc88850;
 
-    const skinM   = new THREE.MeshStandardMaterial({ color: skinColor,  roughness: 0.42, metalness: 0.0  }); // Sweaty dynamic skin
+    const skinM   = new THREE.MeshStandardMaterial({ color: skinColor,  roughness: 0.42, metalness: 0.10 }); // Sweaty dynamic skin
     const trunkM  = new THREE.MeshStandardMaterial({ color: trunkColor, roughness: 0.38, metalness: 0.20 });
     const gloveM  = new THREE.MeshStandardMaterial({
       color: gloveColor,

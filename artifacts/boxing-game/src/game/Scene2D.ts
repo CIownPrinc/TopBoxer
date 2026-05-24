@@ -103,8 +103,8 @@ export class Scene2D {
 
     // ── Background ──────────────────────────────────────────────────────────
     const bg = ctx.createLinearGradient(0, 0, 0, H);
-    bg.addColorStop(0, "#08080f");
-    bg.addColorStop(1, "#12122a");
+    bg.addColorStop(0, "#05060A"); // Deep Midnight
+    bg.addColorStop(1, "#0D0E15"); // Obsidian Dark
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, W, H);
 
@@ -202,9 +202,10 @@ export class Scene2D {
     const breathe = s.isExhausted ? Math.sin(t * 0.8) * 4.2 : Math.sin(t * 1.5) * 2;
     const hitOffX = s.hitAnim > 0 ? (isAI ? -1 : 1) * s.hitAnim * 14 : 0;
 
-    const trunkC = isAI ? "#aa0000" : "#0044cc";
-    const gloveC = isAI ? "#dd1111" : "#1166ff";
-    const skinC  = "#c8855a";
+    const trunkC = isAI ? "#161722" : "#002299";
+    const skinC  = isAI ? "#0D0E15" : "#c88850";
+    const gloveLeftC  = isAI ? "#CCFF00" : "#00F0FF"; // Acid Lime vs Electric Cyan
+    const gloveRightC = isAI ? "#CCFF00" : "#FF0055"; // Acid Lime vs Hot Magenta
 
     if (s.isKO) {
       ctx.save();
@@ -335,7 +336,7 @@ export class Scene2D {
 
     if (leftTrail.length > 1) {
       ctx.save();
-      ctx.strokeStyle = gloveC;
+      ctx.strokeStyle = gloveLeftC;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
       for (let i = 1; i < leftTrail.length; i++) {
@@ -349,7 +350,7 @@ export class Scene2D {
       ctx.restore();
     }
 
-    ctx.fillStyle = gloveC;
+    ctx.fillStyle = gloveLeftC;
     ctx.beginPath();
     ctx.ellipse(lgx, lgy, 15 * scale, 13 * scale, 0, 0, Math.PI * 2);
     ctx.fill();
@@ -372,7 +373,7 @@ export class Scene2D {
 
     if (rightTrail.length > 1) {
       ctx.save();
-      ctx.strokeStyle = gloveC;
+      ctx.strokeStyle = gloveRightC;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
       for (let i = 1; i < rightTrail.length; i++) {
@@ -386,7 +387,7 @@ export class Scene2D {
       ctx.restore();
     }
 
-    ctx.fillStyle = gloveC;
+    ctx.fillStyle = gloveRightC;
     ctx.beginPath();
     ctx.ellipse(rgx, rgy, 15 * scale, 13 * scale, 0, 0, Math.PI * 2);
     ctx.fill();
