@@ -34,7 +34,6 @@ const PUNCH_THRESH    = 0.28;
 const WINDUP_THRESH   = 0.10;
 const STRIKE_WIN_MS   = 200; // Active strike duration
 const RECOVERY_MS     = 450; // Cooldown lock-out
-const BLOCK_Y         = 0.45; // Guard height
 const FORCE_NORM      = 1.4;
 
 interface PerHand {
@@ -54,6 +53,13 @@ export class PunchDetector {
   private blockState    = { left: false, right: false };
   private handsVisible  = { left: false, right: false };
   private callbacks: Array<(e: PunchEvent) => void> = [];
+  
+  // Calibrated block Y threshold, defaults to 0.45
+  private blockY        = 0.45;
+
+  setBlockY(y: number): void {
+    this.blockY = y;
+  }
 
   onPunch(cb: (e: PunchEvent) => void): void { this.callbacks.push(cb); }
 
@@ -83,8 +89,8 @@ export class PunchDetector {
     if (right) this.processHand("right", right, now, confidence.right);
     else       this.resetHand("right");
 
-    this.blockState.left  = left  ? left[0].y  < BLOCK_Y : false;
-    this.blockState.right = right ? right[0].y < BLOCK_Y : false;
+    this.blockState.left  = left  ? left[0].y  < this.blockY : false;
+    this.blockState.right = right ? right[0].y < this.blockY : false;
 
     this.hands.left.debug.blocking  = this.blockState.left;
     this.hands.right.debug.blocking = this.blockState.right;
@@ -139,7 +145,7 @@ export class PunchDetector {
         break;
       case "recovery":
         if (stateAge > RECOVERY_MS) {
-          this.go(h, frame.pos.y < BLOCK_Y ? "guard" : "idle", now);
+          this.go(h, frame.pos.y < this.blockY ? "guard" : "idle", now);
         }
         break;
     }
@@ -157,7 +163,7 @@ export class PunchDetector {
     const { speed, vel, pos, trail } = frame;
     
     // Auto sync state between idle and guard based on height
-    const targetState = pos.y < BLOCK_Y ? "guard" : "idle";
+    const targetState = pos.y < this.blockY ? "guard" : "idle";
     if (h.state !== targetState) {
       this.go(h, targetState, now);
     }
@@ -199,7 +205,7 @@ export class PunchDetector {
 
     // Windup safety timeout
     if (stateAge > 650) {
-      this.go(h, frame.pos.y < BLOCK_Y ? "guard" : "idle", now);
+      this.go(h, frame.pos.y < this.blockY ? "guard" : "idle", now);
       return;
     }
 

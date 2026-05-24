@@ -596,7 +596,8 @@ export class GameEngine {
         });
       }
       
-      if (willBlock && Math.random() < profile.reaction) {
+      if (willBlock) {
+        // AI blocks, but must always lower its guard after the block window duration expires
         setTimeout(() => {
           this.state.isAIBlocking = false;
           this.emit();

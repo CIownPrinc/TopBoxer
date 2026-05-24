@@ -110,6 +110,9 @@ export class BoxingInputSystem {
       trackingConfidence: data.trackingConfidence,
     };
     const cal = this.calibration.update(data.left, data.right, data.timestampMs);
+    if (cal && cal.guard) {
+      this.detector.setBlockY(cal.guard.lowerGuardY);
+    }
     const motion = this.motion.extract(raw, cal);
     const guard = this.guardClassifier.update(motion);
     const dodgeCandidate = this.dodgeClassifier.update(motion);
