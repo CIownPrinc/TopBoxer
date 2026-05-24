@@ -6,10 +6,11 @@ interface HUDProps { state: GameState }
 
 // ── Health bar ─────────────────────────────────────────────────────────────────
 function HealthBar({
-  health, label, color, flipped, knockdowns, maxKnockdowns,
+  health, label, color, flipped, knockdowns, maxKnockdowns, idPrefix,
 }: {
   health: number; label: string; color: string;
   flipped?: boolean; knockdowns: number; maxKnockdowns: number;
+  idPrefix: string;
 }) {
   const pct      = Math.max(0, health);
   const barColor = pct > 55 ? color : pct > 28 ? "#f59e0b" : "#ef4444";
@@ -25,7 +26,7 @@ function HealthBar({
         >
           {label}
         </span>
-        <span className="text-xs font-bold tabular-nums" style={{ color: "#999" }}>
+        <span id={`${idPrefix}-health-val`} className="text-xs font-bold tabular-nums" style={{ color: "#999" }}>
           {Math.ceil(health)}
         </span>
         <div className={`flex gap-1 ${flipped ? "flex-row-reverse" : ""}`}>
@@ -46,6 +47,7 @@ function HealthBar({
         style={{ height: 16, background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.12)" }}
       >
         <div
+          id={`${idPrefix}-health-bar`}
           className="h-full rounded-sm transition-all duration-150"
           style={{
             width: `${pct}%`,
@@ -128,17 +130,19 @@ function PowerShotOverlay({ type, force, ts }: { type: PunchType | null; force: 
 
 // ── Low HP vignette ────────────────────────────────────────────────────────────
 function LowHPVignette({ health }: { health: number }) {
-  if (health > 55) return null;
   const intensity = Math.max(0, (55 - health) / 55);
   const alpha     = 0.15 + intensity * 0.5;
   const isCrit    = health < 20;
+  const show      = health <= 55;
 
   return (
     <div
+      id="hud-low-hp-vignette"
       className={`absolute inset-0 pointer-events-none ${isCrit ? "vignette-danger" : health < 35 ? "vignette-warning" : ""}`}
       style={{
         background: `radial-gradient(ellipse at center, transparent 25%, rgba(200,0,0,${alpha}) 100%)`,
         zIndex: 15,
+        display: show ? "block" : "none",
       }}
     />
   );
@@ -222,6 +226,7 @@ export function HUD({ state }: HUDProps) {
             color="#4a90ff"
             knockdowns={state.knockdownCount.player}
             maxKnockdowns={3}
+            idPrefix="hud-player"
           />
           <div className="flex flex-col items-center shrink-0" style={{ minWidth: 105 }}>
             <div className="text-xs font-bold tracking-widest uppercase mb-1" style={{ color: "rgba(255,255,255,0.4)" }}>
@@ -233,6 +238,7 @@ export function HUD({ state }: HUDProps) {
               </div>
             )}
             <div
+              id="hud-timer"
               className="text-2xl font-black tabular-nums"
               style={{ color: timeC, fontFamily: "monospace", textShadow: `0 0 10px ${timeC}`, lineHeight: 1 }}
             >
@@ -262,6 +268,7 @@ export function HUD({ state }: HUDProps) {
             flipped
             knockdowns={state.knockdownCount.ai}
             maxKnockdowns={3}
+            idPrefix="hud-ai"
           />
         </div>
 
@@ -269,18 +276,18 @@ export function HUD({ state }: HUDProps) {
         {showFighting && (
           <div className="flex items-start justify-between px-4 pt-1 gap-3">
             <div style={{ minHeight: 28 }}>
-              {state.isPlayerBlocking && (
-                <span
-                  className="text-xs font-black uppercase tracking-widest px-2 py-1 rounded inline-block"
-                  style={{
-                    background: "rgba(74,144,255,0.22)",
-                    border: "1px solid #4a90ff",
-                    color: "#4a90ff",
-                  }}
-                >
-                  🛡 BLOCKING
-                </span>
-              )}
+              <span
+                id="hud-player-block-indicator"
+                className="text-xs font-black uppercase tracking-widest px-2 py-1 rounded inline-block"
+                style={{
+                  background: "rgba(74,144,255,0.22)",
+                  border: "1px solid #4a90ff",
+                  color: "#4a90ff",
+                  display: state.isPlayerBlocking ? "inline-block" : "none",
+                }}
+              >
+                🛡 BLOCKING
+              </span>
             </div>
             <div className="text-center">
               <div className="text-[10px] font-bold uppercase tracking-widest" style={{ color: "rgba(255,255,255,0.45)" }}>
@@ -290,19 +297,22 @@ export function HUD({ state }: HUDProps) {
                 🏆 {state.trophies} {state.streak > 1 ? `• 🔥 ${state.streak}W` : ""}
               </div>
             </div>
-            {state.comboCount > 1 && (
-              <div className="text-right">
-                <div className="text-xs font-bold uppercase tracking-widest" style={{ color: "#ffd70055" }}>
-                  combo
-                </div>
-                <div
-                  className="text-2xl font-black"
-                  style={{ color: "#ffd700", fontFamily: "monospace", textShadow: "0 0 12px #ffd700", lineHeight: 1 }}
-                >
-                  x{state.comboCount}
-                </div>
+            <div
+              id="hud-combo-container"
+              className="text-right"
+              style={{ display: state.comboCount > 1 ? "block" : "none" }}
+            >
+              <div className="text-xs font-bold uppercase tracking-widest" style={{ color: "#ffd70055" }}>
+                combo
               </div>
-            )}
+              <div
+                id="hud-combo-count"
+                className="text-2xl font-black"
+                style={{ color: "#ffd700", fontFamily: "monospace", textShadow: "0 0 12px #ffd700", lineHeight: 1 }}
+              >
+                x{state.comboCount}
+              </div>
+            </div>
           </div>
         )}
       </div>

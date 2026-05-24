@@ -128,7 +128,9 @@ const STUN_DURATIONS: Record<string, number> = {
 export class GameEngine {
   private state: GameState = this.defaultState();
   private listeners: StateListener[] = [];
+  private tickListeners: StateListener[] = [];
   private hitListeners: HitEvent[] = [];
+  private lastStructuralState: Partial<GameState> = {};
   private roundTimer: ReturnType<typeof setInterval> | null = null;
   private countdownTimer: ReturnType<typeof setInterval> | null = null;
   private eightCountTimer: ReturnType<typeof setInterval> | null = null;
@@ -197,6 +199,7 @@ export class GameEngine {
 
   // ── Public API ──────────────────────────────────────────────────────────────
   onState(cb: StateListener): void { this.listeners.push(cb); }
+  onTick(cb: StateListener): void { this.tickListeners.push(cb); }
   onHit(cb: HitEvent): void { this.hitListeners.push(cb); }
   setAIPunchCallback(cb: (hand: "left" | "right") => void): void { this.onAIPunchCb = cb; }
   getState(): GameState { return { ...this.state }; }
@@ -298,12 +301,16 @@ export class GameEngine {
   }
 
   setPlayerBlocking(blocking: boolean): void {
-    this.state.isPlayerBlocking = blocking;
+    if (this.state.isPlayerBlocking !== blocking) {
+      this.state.isPlayerBlocking = blocking;
+      this.emitTick();
+    }
   }
 
   setPlayerTrackingSignal(signal: { confidence: number; speed: number; blocking: boolean }): void {
     this.trackingSignal = signal;
     this.state.trackingQuality = Math.max(0, Math.min(1, signal.confidence));
+    this.emitTick();
   }
 
   reset(): void {
@@ -358,7 +365,39 @@ export class GameEngine {
   }
 
   private emit(): void {
-    this.listeners.forEach((cb) => cb(this.getState()));
+    const s = this.state;
+    const last = this.lastStructuralState;
+    
+    // Check if any structural field changed
+    const changed = 
+      s.phase !== last.phase ||
+      s.round !== last.round ||
+      s.winner !== last.winner ||
+      s.knockedDown !== last.knockedDown ||
+      s.countdownValue !== last.countdownValue ||
+      s.tutorialStep !== last.tutorialStep ||
+      s.eightCount !== last.eightCount ||
+      JSON.stringify(s.roundsWon) !== JSON.stringify(last.roundsWon) ||
+      JSON.stringify(s.knockdownCount) !== JSON.stringify(last.knockdownCount);
+      
+    if (changed) {
+      this.lastStructuralState = {
+        phase: s.phase,
+        round: s.round,
+        winner: s.winner,
+        knockedDown: s.knockedDown,
+        countdownValue: s.countdownValue,
+        tutorialStep: s.tutorialStep,
+        eightCount: s.eightCount,
+        roundsWon: { ...s.roundsWon },
+        knockdownCount: { ...s.knockdownCount },
+      };
+      this.listeners.forEach((cb) => cb(this.getState()));
+    }
+  }
+
+  private emitTick(): void {
+    this.tickListeners.forEach((cb) => cb(this.getState()));
   }
 
   private startRefereeCountdown(): void {
@@ -544,7 +583,7 @@ export class GameEngine {
       this.state.aiExhausted = false;
     }
 
-    this.emit();
+    this.emitTick();
   }
 
   private scheduleAIPunch(): void {

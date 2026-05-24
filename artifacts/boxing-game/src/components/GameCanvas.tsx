@@ -208,6 +208,86 @@ export function GameCanvas() {
   useEffect(() => {
     const engine = new GameEngine();
     engine.onState(setGameState);
+
+    // Subscribe to high-frequency ticks to update the HUD imperatively
+    engine.onTick((state) => {
+      // 1. Update Player Health Bar and Value
+      const playerHealthBar = document.getElementById("hud-player-health-bar");
+      if (playerHealthBar) {
+        playerHealthBar.style.width = `${Math.max(0, state.playerHealth)}%`;
+        const barColor = state.playerHealth > 55 ? "#4a90ff" : state.playerHealth > 28 ? "#f59e0b" : "#ef4444";
+        playerHealthBar.style.background = `linear-gradient(90deg, ${barColor}cc, ${barColor})`;
+        playerHealthBar.style.boxShadow = `0 0 8px ${barColor}88, inset 0 1px 0 rgba(255,255,255,0.2)`;
+      }
+      const playerHealthVal = document.getElementById("hud-player-health-val");
+      if (playerHealthVal) {
+        playerHealthVal.textContent = Math.ceil(state.playerHealth).toString();
+      }
+
+      // 2. Update AI Health Bar and Value
+      const aiHealthBar = document.getElementById("hud-ai-health-bar");
+      if (aiHealthBar) {
+        aiHealthBar.style.width = `${Math.max(0, state.aiHealth)}%`;
+        const barColor = state.aiHealth > 55 ? "#ef4444" : state.aiHealth > 28 ? "#f59e0b" : "#ef4444";
+        aiHealthBar.style.background = `linear-gradient(90deg, ${barColor}cc, ${barColor})`;
+        aiHealthBar.style.boxShadow = `0 0 8px ${barColor}88, inset 0 1px 0 rgba(255,255,255,0.2)`;
+      }
+      const aiHealthVal = document.getElementById("hud-ai-health-val");
+      if (aiHealthVal) {
+        aiHealthVal.textContent = Math.ceil(state.aiHealth).toString();
+      }
+
+      // 3. Update Timer
+      const timerVal = document.getElementById("hud-timer");
+      if (timerVal) {
+        const minutes = Math.floor(state.timeLeft / 60);
+        const seconds = Math.floor(state.timeLeft % 60).toString().padStart(2, "0");
+        timerVal.textContent = `${minutes}:${seconds}`;
+        const timeColor = state.timeLeft > 20 ? "#fff" : state.timeLeft > 10 ? "#f59e0b" : "#ef4444";
+        timerVal.style.color = timeColor;
+        timerVal.style.textShadow = `0 0 10px ${timeColor}`;
+      }
+
+      // 4. Update Combo Count
+      const comboContainer = document.getElementById("hud-combo-container");
+      const comboCountVal = document.getElementById("hud-combo-count");
+      if (comboContainer && comboCountVal) {
+        if (state.comboCount > 1) {
+          comboCountVal.textContent = `x${state.comboCount}`;
+          comboContainer.style.display = "block";
+        } else {
+          comboContainer.style.display = "none";
+        }
+      }
+
+      // 5. Update Player Blocking Indicator
+      const blockIndicator = document.getElementById("hud-player-block-indicator");
+      if (blockIndicator) {
+        blockIndicator.style.display = state.isPlayerBlocking ? "inline-block" : "none";
+      }
+
+      // 6. Update Low HP Vignette
+      const vignette = document.getElementById("hud-low-hp-vignette");
+      if (vignette) {
+        const hp = state.playerHealth;
+        if (hp > 55) {
+          vignette.style.display = "none";
+        } else {
+          vignette.style.display = "block";
+          const intensity = Math.max(0, (55 - hp) / 55);
+          const alpha = 0.15 + intensity * 0.5;
+          vignette.style.background = `radial-gradient(ellipse at center, transparent 25%, rgba(200,0,0,${alpha}) 100%)`;
+          if (hp < 20) {
+            vignette.className = "absolute inset-0 pointer-events-none vignette-danger";
+          } else if (hp < 35) {
+            vignette.className = "absolute inset-0 pointer-events-none vignette-warning";
+          } else {
+            vignette.className = "absolute inset-0 pointer-events-none";
+          }
+        }
+      }
+    });
+
     engine.onHit((target, force) => {
       if (target === "ai") {
         sceneRef.current?.triggerAIHit(force);
