@@ -76,6 +76,13 @@ export class ThreeScene {
   private fpFlashMat!: THREE.MeshBasicMaterial;
   private flashOpacity = 0;
 
+  private leftEchoes:  THREE.Mesh[] = [];
+  private rightEchoes: THREE.Mesh[] = [];
+  private prevLPos          = new THREE.Vector3();
+  private prevRPos          = new THREE.Vector3();
+  private leftTrailOpacity  = 0;
+  private rightTrailOpacity = 0;
+
   // Camera-local targets / current positions for FP gloves
   private fpLTarget  = new THREE.Vector3(-0.38, -0.38, -0.82);
   private fpRTarget  = new THREE.Vector3( 0.38, -0.38, -0.82);
@@ -332,6 +339,10 @@ export class ThreeScene {
     this.slowMo       = 0;
     this.flashOpacity = 0;
     if (this.fpFlashMat) this.fpFlashMat.opacity = 0;
+    this.leftTrailOpacity = 0;
+    this.rightTrailOpacity = 0;
+    for (const e of this.leftEchoes) e.visible = false;
+    for (const e of this.rightEchoes) e.visible = false;
   }
 
   // ── Combat triggers ───────────────────────────────────────────────────────
@@ -507,13 +518,19 @@ export class ThreeScene {
   private buildFighter(isAI: boolean): FighterMeshes {
     const g = new THREE.Group();
 
-    const trunkColor = isAI ? 0x990011 : 0x002299;
-    const gloveColor = isAI ? 0xcc0000 : 0x0033cc;
-    const skinColor  = isAI ? 0xb07040 : 0xc88850;
+    const trunkColor = isAI ? 0x161722 : 0x002299;
+    const gloveColor = isAI ? 0xCCFF00 : 0x0033cc;
+    const skinColor  = isAI ? 0x0D0E15 : 0xc88850;
 
     const skinM   = new THREE.MeshStandardMaterial({ color: skinColor,  roughness: 0.42, metalness: 0.0  }); // Sweaty dynamic skin
     const trunkM  = new THREE.MeshStandardMaterial({ color: trunkColor, roughness: 0.38, metalness: 0.20 });
-    const gloveM  = new THREE.MeshStandardMaterial({ color: gloveColor, roughness: 0.18, metalness: 0.40 }); // Shiny leather gloves
+    const gloveM  = new THREE.MeshStandardMaterial({
+      color: gloveColor,
+      emissive: isAI ? 0xCCFF00 : 0x000000,
+      emissiveIntensity: isAI ? 0.35 : 0.0,
+      roughness: 0.18,
+      metalness: 0.40,
+    }); // Shiny leather gloves
     const shoeM   = new THREE.MeshStandardMaterial({ color: 0x080808,   roughness: 0.88, metalness: 0.08 });
     const helmetM = new THREE.MeshStandardMaterial({
       color: trunkColor, roughness: 0.18, metalness: 0.50, transparent: true, opacity: 0.82,
@@ -544,8 +561,13 @@ export class ThreeScene {
 
     // Face details (AI only — angry eyes, nose, V-brows)
     if (isAI) {
-      const eyeM  = new THREE.MeshStandardMaterial({ color: 0x110011, roughness: 1.0 });
-      const browM = new THREE.MeshStandardMaterial({ color: 0x200000, roughness: 0.8 });
+      const eyeM  = new THREE.MeshStandardMaterial({
+        color: 0xCCFF00,
+        emissive: 0xCCFF00,
+        emissiveIntensity: 0.8,
+        roughness: 1.0,
+      });
+      const browM = new THREE.MeshStandardMaterial({ color: 0x161722, roughness: 0.8 });
       const fwdZ  = -(headR - 0.06); // front of head in local space
 
       for (const [sx, bRot] of [[-0.10,  0.33], [0.10, -0.33]] as [number, number][]) {
@@ -559,7 +581,7 @@ export class ThreeScene {
       const nose  = new THREE.Mesh(new THREE.BoxGeometry(0.065, 0.055, 0.075), skinM);
       nose.position.set(0, 1.66, fwdZ - 0.005); g.add(nose);
 
-      const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.03, 0.04), eyeM);
+      const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.03, 0.04), browM);
       mouth.position.set(0, 1.60, fwdZ - 0.005); g.add(mouth);
     }
 
@@ -617,17 +639,21 @@ export class ThreeScene {
     const group = new THREE.Group();
 
     // depthTest:false so gloves always draw in front of the scene
-    const gloveMat = new THREE.MeshStandardMaterial({
-      color: 0x0033cc, roughness: 0.18, metalness: 0.40, // Match premium shiny look
+    const leftGloveMat = new THREE.MeshStandardMaterial({
+      color: 0x00F0FF, emissive: 0x00F0FF, emissiveIntensity: 0.8, roughness: 0.18, metalness: 0.40,
+      depthTest: false, depthWrite: false,
+    });
+    const rightGloveMat = new THREE.MeshStandardMaterial({
+      color: 0xFF0055, emissive: 0xFF0055, emissiveIntensity: 0.8, roughness: 0.18, metalness: 0.40,
       depthTest: false, depthWrite: false,
     });
     const armMat = new THREE.MeshStandardMaterial({
-      color: 0xc08040, roughness: 0.72, metalness: 0.0,
+      color: 0x12131C, roughness: 0.30, metalness: 0.60,
       depthTest: false, depthWrite: false,
     });
 
-    const mkGlove = (): THREE.Mesh => {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(0.20, 0.14, 0.27), gloveMat);
+    const mkGlove = (mat: THREE.Material): THREE.Mesh => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(0.20, 0.14, 0.27), mat);
       m.renderOrder = 900; return m;
     };
     const mkArm = (): THREE.Mesh => {
@@ -635,12 +661,48 @@ export class ThreeScene {
       m.rotation.x = -Math.PI / 2; m.renderOrder = 900; return m;
     };
 
-    const leftGlove  = mkGlove(); leftGlove.position.set( -0.38, -0.38, -0.82);
-    const rightGlove = mkGlove(); rightGlove.position.set( 0.38, -0.38, -0.82);
+    const leftGlove  = mkGlove(leftGloveMat); leftGlove.position.set( -0.38, -0.38, -0.82);
+    const rightGlove = mkGlove(rightGloveMat); rightGlove.position.set( 0.38, -0.38, -0.82);
     const leftArm    = mkArm();   leftArm.position.set(   -0.38, -0.32, -0.60);
     const rightArm   = mkArm();   rightArm.position.set(   0.38, -0.32, -0.60);
 
     group.add(leftGlove, rightGlove, leftArm, rightArm);
+
+    // Pre-allocate 8 wireframe box echoes per glove
+    const geom = new THREE.BoxGeometry(0.20, 0.14, 0.27);
+    this.leftEchoes = [];
+    this.rightEchoes = [];
+
+    for (let i = 0; i < 8; i++) {
+      const leftEchoMat = new THREE.MeshBasicMaterial({
+        color: 0x00F0FF,
+        transparent: true,
+        opacity: 0,
+        wireframe: true,
+        depthTest: false,
+        depthWrite: false,
+      });
+      const leftEchoMesh = new THREE.Mesh(geom, leftEchoMat);
+      leftEchoMesh.renderOrder = 899;
+      leftEchoMesh.position.copy(leftGlove.position);
+      group.add(leftEchoMesh);
+      this.leftEchoes.push(leftEchoMesh);
+
+      const rightEchoMat = new THREE.MeshBasicMaterial({
+        color: 0xFF0055,
+        transparent: true,
+        opacity: 0,
+        wireframe: true,
+        depthTest: false,
+        depthWrite: false,
+      });
+      const rightEchoMesh = new THREE.Mesh(geom, rightEchoMat);
+      rightEchoMesh.renderOrder = 899;
+      rightEchoMesh.position.copy(rightGlove.position);
+      group.add(rightEchoMesh);
+      this.rightEchoes.push(rightEchoMesh);
+    }
+
     return { group, leftGlove, rightGlove, leftArm, rightArm };
   }
 
@@ -894,6 +956,10 @@ export class ThreeScene {
       this.camera.lookAt(this.camCurrentLookAt);
       this.camera.rotation.z += this.camCurrentRoll;
 
+      // Record previous positions to calculate speed
+      this.prevLPos.copy(this.fpLCurrent);
+      this.prevRPos.copy(this.fpRCurrent);
+
       // Smooth FP gloves toward their targets
       const gloveLerpF = Math.min(1, animDelta * 22);
       this.fpLCurrent.lerp(this.fpLTarget, gloveLerpF);
@@ -913,6 +979,49 @@ export class ThreeScene {
       const bob = Math.sin(t * 1.55) * 0.011;
       this.fpArms.leftGlove.position.y  += bob;
       this.fpArms.rightGlove.position.y += bob;
+
+      // Calculate hand speeds (meters per second)
+      const speedL = this.fpLCurrent.distanceTo(this.prevLPos) / (realDelta || 0.016);
+      const speedR = this.fpRCurrent.distanceTo(this.prevRPos) / (realDelta || 0.016);
+
+      // Scale trail opacity based on speed (speed > 0.28 fades trails in, stationary fades trails out to 0)
+      const targetOpacityL = speedL > 0.28 ? Math.min(0.6, (speedL - 0.28) * 0.25) : 0;
+      const targetOpacityR = speedR > 0.28 ? Math.min(0.6, (speedR - 0.28) * 0.25) : 0;
+
+      this.leftTrailOpacity = THREE.MathUtils.lerp(this.leftTrailOpacity, targetOpacityL, Math.min(1, animDelta * 10));
+      this.rightTrailOpacity = THREE.MathUtils.lerp(this.rightTrailOpacity, targetOpacityR, Math.min(1, animDelta * 10));
+
+      // Update left echoes
+      if (this.leftEchoes.length > 0) {
+        this.leftEchoes[0].position.copy(this.fpArms.leftGlove.position);
+        this.leftEchoes[0].rotation.copy(this.fpArms.leftGlove.rotation);
+        for (let i = 1; i < this.leftEchoes.length; i++) {
+          this.leftEchoes[i].position.lerp(this.leftEchoes[i - 1].position, 0.35);
+          this.leftEchoes[i].rotation.copy(this.leftEchoes[i - 1].rotation);
+        }
+        for (let i = 0; i < this.leftEchoes.length; i++) {
+          const mat = this.leftEchoes[i].material as THREE.MeshBasicMaterial;
+          const factor = 1 - (i / this.leftEchoes.length);
+          mat.opacity = this.leftTrailOpacity * factor;
+          this.leftEchoes[i].visible = mat.opacity > 0.01;
+        }
+      }
+
+      // Update right echoes
+      if (this.rightEchoes.length > 0) {
+        this.rightEchoes[0].position.copy(this.fpArms.rightGlove.position);
+        this.rightEchoes[0].rotation.copy(this.fpArms.rightGlove.rotation);
+        for (let i = 1; i < this.rightEchoes.length; i++) {
+          this.rightEchoes[i].position.lerp(this.rightEchoes[i - 1].position, 0.35);
+          this.rightEchoes[i].rotation.copy(this.rightEchoes[i - 1].rotation);
+        }
+        for (let i = 0; i < this.rightEchoes.length; i++) {
+          const mat = this.rightEchoes[i].material as THREE.MeshBasicMaterial;
+          const factor = 1 - (i / this.rightEchoes.length);
+          mat.opacity = this.rightTrailOpacity * factor;
+          this.rightEchoes[i].visible = mat.opacity > 0.01;
+        }
+      }
     }
 
     // Decay hits
