@@ -1,73 +1,41 @@
-/**
- * Layers 2 & 3 — Gesture Recognition + Game Action
- *
- * Per-hand state machine:
- *   IDLE → COCKING → PUNCHING → COOLDOWN → IDLE
- *        ↘ PUNCHING (direct jab/hook from IDLE)
- *
- * Gestures:
- *   JAB    – fast upward (Y-negative) motion from IDLE
- *   HOOK   – fast lateral (X-dominant) motion from IDLE
- *   UPPERCUT – fast downward (Y-positive) motion from IDLE
- *   CHARGE – wind-up (vy positive, slow) → fast forward release
- *   BLOCK  – both wrists above face level, low velocity
- */
 import type { NormalizedLandmark } from "@mediapipe/tasks-vision";
 import { HandSmoother } from "./HandSmoother";
 import type { SmoothedFrame, Vec3 } from "./HandSmoother";
 
-// ── Exported types ──────────────────────────────────────────────────────────
 export type PunchType = "jab" | "cross" | "hook" | "uppercut" | "charge";
 
 export interface PunchEvent {
   hand: "left" | "right";
   type: PunchType;
-  force: number;       // 0–1 (normalised from velocity)
-  confidence: number;  // 0–1 (gesture classification confidence)
+  force: number;
+  confidence: number;
   timestamp: number;
 }
 
-export type HandState = "idle" | "cocking" | "punching" | "cooldown";
+export type HandState = "idle" | "guard" | "windup" | "strike" | "recovery" | "cocking" | "punching" | "cooldown";
 
 export interface HandDebugInfo {
   state: HandState;
   speed: number;
   vel: Vec3;
-  lastGesture: PunchType | "block" | "idle" | "cocking";
+  lastGesture: PunchType | "block" | "idle" | "guard" | "windup" | "strike" | "recovery";
   confidence: number;
   blocking: boolean;
   pos: Vec3;
   direction: Vec3;
   stability: number;
   trackingConfidence: number;
+  fistConfidence: number;
 }
 
-// ── Tuning constants ────────────────────────────────────────────────────────
-/** Below this speed: ignore (natural tremor) */
+// ── Tuning constants for hybrid tracking ──────────────────────────────────
 const NOISE_THRESH    = 0.08;
-/** Minimum speed for a direct punch from idle */
 const PUNCH_THRESH    = 0.28;
-/** Minimum speed to enter cocking state (wind-up) */
-const COCK_THRESH     = 0.10;
-/** Minimum speed to release a charge attack */
-const CHARGE_THRESH   = 0.32;
-/** Minimum ms spent cocking before a charge is accepted */
-const COCK_MIN_MS     = 180;
-/** If still cocking after this many ms with no release → reset */
-const COCK_MAX_MS     = 850;
-/** How long the PUNCHING state lasts (active frames) */
-const PUNCH_WIN_MS    = 220;
-/** How long to stay in COOLDOWN before returning to IDLE */
-const COOLDOWN_MS     = 620;
-/** Wrist y-value above which both hands = blocking (0 = top) */
-const BLOCK_Y         = 0.42;
-/** Normalised speed that maps to force = 1.0 */
+const WINDUP_THRESH   = 0.10;
+const STRIKE_WIN_MS   = 200; // Active strike duration
+const RECOVERY_MS     = 450; // Cooldown lock-out
+const BLOCK_Y         = 0.45; // Guard height
 const FORCE_NORM      = 1.4;
-/** Primary axis must represent at least this fraction of speed */
-const DIR_CONFIDENCE  = 0.52;
-/** Minimum classification confidence to emit a punch event */
-const EMIT_THRESHOLD  = 0.42;
-// ───────────────────────────────────────────────────────────────────────────
 
 interface PerHand {
   smoother: HandSmoother;
@@ -75,6 +43,7 @@ interface PerHand {
   stateTs: number;
   lastPunchTs: number;
   debug: HandDebugInfo;
+  fistConfidence: number;
 }
 
 export class PunchDetector {
@@ -86,7 +55,6 @@ export class PunchDetector {
   private handsVisible  = { left: false, right: false };
   private callbacks: Array<(e: PunchEvent) => void> = [];
 
-  // ── Public API ─────────────────────────────────────────────────────────────
   onPunch(cb: (e: PunchEvent) => void): void { this.callbacks.push(cb); }
 
   getBothHandsVisible(): boolean {
@@ -124,7 +92,6 @@ export class PunchDetector {
     this.hands.right.debug.trackingConfidence = confidence.right;
   }
 
-  // ── State machine ──────────────────────────────────────────────────────────
   private processHand(
     side: "left" | "right",
     lm: NormalizedLandmark[],
@@ -135,6 +102,9 @@ export class PunchDetector {
     const frame = h.smoother.update(lm, now);
     const stateAge = now - h.stateTs;
 
+    // Calculate fistConfidence metric
+    h.fistConfidence = this.calculateFistConfidence(lm);
+
     // Update debug
     h.debug.speed = frame.speed;
     h.debug.vel   = frame.vel;
@@ -142,135 +112,186 @@ export class PunchDetector {
     h.debug.direction = this.unit(frame.vel);
     h.debug.stability = Math.max(0, 1 - Math.min(1, frame.speed / 1.8));
     h.debug.trackingConfidence = trackingConfidence;
+    h.debug.fistConfidence = h.fistConfidence;
     h.debug.state = h.state;
 
+    // Strict State Machine transitions
     switch (h.state) {
-      case "idle":     this.fromIdle(side, h, frame, now, trackingConfidence);         break;
-      case "cocking":  this.fromCocking(side, h, frame, stateAge, now); break;
-      case "punching": if (stateAge > PUNCH_WIN_MS) this.go(h, "cooldown", now); break;
-      case "cooldown": if (stateAge > COOLDOWN_MS)  this.go(h, "idle",     now); break;
+      case "idle":
+      case "guard":
+        this.fromIdleOrGuard(side, h, frame, now, trackingConfidence);
+        break;
+      case "windup":
+        this.fromWindup(side, h, frame, stateAge, now);
+        break;
+      case "strike":
+        if (stateAge > STRIKE_WIN_MS) {
+          this.go(h, "recovery", now);
+        }
+        break;
+      case "recovery":
+        if (stateAge > RECOVERY_MS) {
+          this.go(h, frame.pos.y < BLOCK_Y ? "guard" : "idle", now);
+        }
+        break;
     }
 
     h.debug.state = h.state;
   }
 
-  private fromIdle(
+  private fromIdleOrGuard(
     side: "left" | "right",
     h: PerHand,
     frame: SmoothedFrame,
     now: number,
     trackingConfidence: number
   ): void {
-    const { speed, vel } = frame;
+    const { speed, vel, pos, trail } = frame;
+    
+    // Auto sync state between idle and guard based on height
+    const targetState = pos.y < BLOCK_Y ? "guard" : "idle";
+    if (h.state !== targetState) {
+      this.go(h, targetState, now);
+    }
+
     if (speed < NOISE_THRESH) {
-      h.debug.lastGesture = "idle";
+      h.debug.lastGesture = targetState;
       return;
     }
 
-    const absVx = Math.abs(vel.x);
-    const absVy = Math.abs(vel.y);
-
-    // Slow backward motion → start charging
-    if (
-      vel.y > COCK_THRESH &&           // moving down (toward waist = wind-up)
-      speed < PUNCH_THRESH * 0.9 &&    // not fast enough to be a punch yet
-      vel.y > absVx * 0.7              // mostly vertical
-    ) {
-      this.go(h, "cocking", now);
-      h.debug.lastGesture = "cocking";
-      h.debug.confidence  = 0;
+    // 1. Check for windup retraction
+    const isRetracting = vel.y > WINDUP_THRESH || vel.z > WINDUP_THRESH;
+    if (isRetracting && speed < PUNCH_THRESH * 0.9) {
+      this.go(h, "windup", now);
+      h.debug.lastGesture = "windup";
       return;
     }
 
-    // Fast motion → classify and emit punch
-    const adaptivePunchThreshold = PUNCH_THRESH * (trackingConfidence < 0.55 ? 0.9 : 1);
-    if (speed >= adaptivePunchThreshold) {
-      const { type, confidence } = this.classify(frame);
-      const confGate = confidence * trackingConfidence;
-      const adaptiveEmitThreshold = EMIT_THRESHOLD * (trackingConfidence < 0.45 ? 0.85 : 1);
-      if (confGate >= adaptiveEmitThreshold && now - h.lastPunchTs >= COOLDOWN_MS) {
-        this.emit(side, h, type, speed, confidence, now);
+    // 2. Check for strike release (High Velocity + Fist Confidence)
+    if (speed >= PUNCH_THRESH && h.fistConfidence >= 0.55 && now - h.lastPunchTs >= RECOVERY_MS) {
+      const { type, confidence } = this.classifyTrail(trail, vel, speed, h.fistConfidence, side);
+      
+      const punchScore = confidence * h.fistConfidence * trackingConfidence;
+      if (punchScore >= 0.35) {
+        this.emitPunch(side, h, type, speed, confidence, now);
       }
     }
   }
 
-  private fromCocking(
+  private fromWindup(
     side: "left" | "right",
     h: PerHand,
     frame: SmoothedFrame,
     stateAge: number,
     now: number
   ): void {
-    h.debug.lastGesture = "cocking";
-    h.debug.confidence  = Math.min(1, stateAge / COCK_MIN_MS);
+    h.debug.lastGesture = "windup";
 
-    // Timeout without release → reset
-    if (stateAge > COCK_MAX_MS) {
-      this.go(h, "idle", now);
+    // Windup safety timeout
+    if (stateAge > 650) {
+      this.go(h, frame.pos.y < BLOCK_Y ? "guard" : "idle", now);
       return;
     }
 
-    // Release: fast forward (Y-negative = upward) after sufficient wind-up
-    const { speed, vel } = frame;
-    const forwardSpeed = Math.max(0, -vel.y);
-    if (
-      stateAge >= COCK_MIN_MS &&
-      forwardSpeed >= CHARGE_THRESH &&
-      speed >= CHARGE_THRESH
-    ) {
-      const rawForce = Math.min(1, speed / (FORCE_NORM * 0.65));
-      // Charge damage multiplied by up to 1.5×
-      const force = Math.min(1, rawForce * 1.45);
-      this.emitEvent({
-        hand: side,
-        type: "charge",
-        force,
-        confidence: 0.92,
-        timestamp: now,
-      });
-      h.lastPunchTs = now;
-      h.debug.lastGesture = "charge";
-      h.debug.confidence  = 0.92;
-      this.go(h, "punching", now);
+    // Release strike: fast forward explosion with high fist confidence
+    const { speed, vel, trail } = frame;
+    const forwardSpeed = Math.max(0, -vel.y) + Math.max(0, -vel.z);
+    if (forwardSpeed >= PUNCH_THRESH * 0.85 && h.fistConfidence >= 0.60 && now - h.lastPunchTs >= RECOVERY_MS) {
+      const { type, confidence } = this.classifyTrail(trail, vel, speed, h.fistConfidence, side);
+      
+      const finalType = type === "cross" || type === "jab" ? "charge" as const : type;
+      this.emitPunch(side, h, finalType, speed * 1.25, confidence, now);
     }
   }
 
-  /** Classify a fast motion into JAB / HOOK / UPPERCUT */
-  private classify(frame: SmoothedFrame): { type: PunchType; confidence: number } {
-    const { vel, speed } = frame;
-    if (speed < 0.001) return { type: "jab", confidence: 0 };
+  private calculateFistConfidence(lm: NormalizedLandmark[]): number {
+    if (lm.length < 21) return 0;
+    
+    const distSq = (a: NormalizedLandmark, b: NormalizedLandmark) => {
+      return (a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2;
+    };
+    const dist = (a: NormalizedLandmark, b: NormalizedLandmark) => Math.sqrt(distSq(a, b));
 
-    const absVx = Math.abs(vel.x);
-    const absVy = Math.abs(vel.y);
-    const fwdFrac   = Math.max(0, -vel.y) / speed; // Y-neg = forward
-    const backFrac  = Math.max(0, vel.y)  / speed; // Y-pos = downward
-    const latFrac   = absVx / speed;
+    // 1. Finger Spread (index tip [8] to pinky tip [20])
+    const knuckleWidth = dist(lm[5], lm[17]);
+    const tipSpread = dist(lm[8], lm[20]);
+    const spreadRatio = tipSpread / (knuckleWidth || 0.001);
+    const spreadScore = Math.max(0, Math.min(1.0, 1.8 - spreadRatio * 0.8));
 
-    let type: PunchType;
-    let dirConf: number;
+    // 2. Finger Curl (average distance from tips 8,12,16,20 to palm MCP 9)
+    let curlSum = 0;
+    const tips = [8, 12, 16, 20];
+    tips.forEach(t => {
+      curlSum += dist(lm[t], lm[9]);
+    });
+    const avgCurlDist = curlSum / 4;
+    const refLength = dist(lm[0], lm[9]); // Wrist to MCP 9
+    const curlRatio = avgCurlDist / (refLength || 0.001);
+    const curlScore = Math.max(0, Math.min(1.0, 1.8 - curlRatio * 1.2));
 
-    if (latFrac > DIR_CONFIDENCE && latFrac >= fwdFrac * 1.1) {
-      // Lateral dominant → hook
-      type    = "hook";
-      dirConf = latFrac;
-    } else if (backFrac > DIR_CONFIDENCE && backFrac > fwdFrac && backFrac > latFrac) {
-      // Downward dominant → uppercut (fast version of the cocking motion)
-      type    = "uppercut";
-      dirConf = backFrac;
-    } else {
-      // Default: upward/forward → jab
-      type    = "jab";
-      dirConf = Math.max(fwdFrac, 0.5); // jab is the fallback; give generous confidence
+    // 3. Knuckle Compression (tightness of the knuckles alignment)
+    const compressionDist = dist(lm[5], lm[9]) + dist(lm[9], lm[13]) + dist(lm[13], lm[17]);
+    const compScore = Math.max(0.3, Math.min(1.0, 1.0 - (compressionDist - refLength * 0.9) / (refLength || 0.001)));
+
+    return (spreadScore * 0.4) + (curlScore * 0.4) + (compScore * 0.2);
+  }
+
+  private classifyTrail(trail: Vec3[], vel: Vec3, speed: number, fistConf: number, side: "left" | "right"): { type: PunchType; confidence: number } {
+    if (trail.length < 4) return { type: "jab", confidence: 0.5 };
+
+    const start = trail[0];
+    const end = trail[trail.length - 1];
+
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const dz = end.z - start.z;
+
+    const totalDist = Math.sqrt(dx * dx + dy * dy + dz * dz) || 0.001;
+
+    // Linear Deviation analysis along intermediate points
+    let maxDeviation = 0;
+    for (let i = 1; i < trail.length - 1; i++) {
+      const p = trail[i];
+      const ax = p.x - start.x;
+      const ay = p.y - start.y;
+      const az = p.z - start.z;
+      
+      const t = Math.max(0, Math.min(1, (ax * dx + ay * dy + az * dz) / (totalDist * totalDist)));
+      const cx = start.x + t * dx;
+      const cy = start.y + t * dy;
+      const cz = start.z + t * dz;
+      
+      const d = Math.sqrt((p.x - cx) ** 2 + (p.y - cy) ** 2 + (p.z - cz) ** 2);
+      if (d > maxDeviation) maxDeviation = d;
     }
 
-    // Speed confidence: how far above the threshold?
-    const speedConf = Math.min(1, (speed - PUNCH_THRESH) / PUNCH_THRESH + 0.5);
-    // Geometric mean so both axes must be good
-    const confidence = Math.sqrt(dirConf * speedConf);
+    const isStraight = maxDeviation < 0.08;
+    const horizontalArc = Math.abs(dx) > Math.abs(dy) * 1.15 && !isStraight;
+    const verticalArc = dy < -0.05 && !isStraight; // Y-negative is rising
+
+    let type: PunchType = "jab";
+    let confidence = 0.55;
+
+    if (horizontalArc) {
+      type = "hook";
+      confidence = 0.65 + Math.min(0.35, maxDeviation * 2.0);
+    } else if (verticalArc) {
+      type = "uppercut";
+      confidence = 0.65 + Math.min(0.35, maxDeviation * 2.0);
+    } else {
+      if (side === "right") {
+        type = "cross";
+        confidence = 0.70 + Math.min(0.30, fistConf * 0.3);
+      } else {
+        type = "jab";
+        confidence = 0.65 + Math.min(0.35, fistConf * 0.4);
+      }
+    }
+
     return { type, confidence };
   }
 
-  private emit(
+  private emitPunch(
     side: "left" | "right",
     h: PerHand,
     type: PunchType,
@@ -278,21 +299,21 @@ export class PunchDetector {
     confidence: number,
     now: number
   ): void {
-    const force = Math.min(1, speed / FORCE_NORM);
-    this.emitEvent({ hand: side, type, force, confidence, timestamp: now });
-    h.lastPunchTs       = now;
+    const force = Math.min(1.0, speed / FORCE_NORM);
+    const event: PunchEvent = { hand: side, type, force, confidence, timestamp: now };
+    this.callbacks.forEach((cb) => cb(event));
+
+    h.lastPunchTs = now;
     h.debug.lastGesture = type;
     h.debug.confidence  = confidence;
-    this.go(h, "punching", now);
-  }
-
-  private emitEvent(event: PunchEvent): void {
-    this.callbacks.forEach((cb) => cb(event));
+    
+    this.go(h, "strike", now);
   }
 
   private go(h: PerHand, state: HandState, now: number): void {
     h.state   = state;
     h.stateTs = now;
+    h.debug.state = state;
   }
 
   private resetHand(side: "left" | "right"): void {
@@ -300,12 +321,15 @@ export class PunchDetector {
     h.smoother.reset();
     h.state     = "idle";
     h.stateTs   = 0;
+    h.fistConfidence = 0;
+    
     h.debug.speed = 0;
     h.debug.vel   = { x: 0, y: 0, z: 0 };
     h.debug.pos   = { x: 0, y: 0, z: 0 };
     h.debug.direction = { x: 0, y: 0, z: 0 };
     h.debug.stability = 1;
     h.debug.trackingConfidence = 0;
+    h.debug.fistConfidence = 0;
     h.debug.state = "idle";
     h.debug.lastGesture = "idle";
     h.debug.confidence  = 0;
@@ -318,6 +342,7 @@ export class PunchDetector {
       state:    "idle",
       stateTs:  0,
       lastPunchTs: 0,
+      fistConfidence: 0,
       debug: {
         state: "idle",
         speed: 0,
@@ -329,6 +354,7 @@ export class PunchDetector {
         blocking: false,
         stability: 1,
         trackingConfidence: 0,
+        fistConfidence: 0,
       },
     };
   }

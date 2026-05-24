@@ -5,11 +5,6 @@
  */
 import type { NormalizedLandmark } from "@mediapipe/tasks-vision";
 
-// Higher alpha = more responsive, less smoothing (0–1)
-const EMA_ALPHA = 0.38;
-// Look-back window used for velocity computation (ms)
-const VEL_WINDOW_MS = 110;
-
 export interface Vec3 { x: number; y: number; z: number }
 
 export interface SmoothedFrame {
@@ -17,57 +12,67 @@ export interface SmoothedFrame {
   vel: Vec3;      // velocity in normalised units / second
   speed: number;  // scalar magnitude of vel
   ts: number;     // performance.now() timestamp
+  trail: Vec3[];  // motion trail buffer of last 15 smoothed wrist positions
 }
 
-interface StoredFrame { pos: Vec3; ts: number }
-
 export class HandSmoother {
-  private history: StoredFrame[] = [];
-  private ema: Vec3 | null = null;
+  private history: Vec3[] = []; // motion trail buffer of last 15 points
+  private emaPos: Vec3 | null = null;
+  private emaVel: Vec3 | null = null;
+  private lastTs = 0;
 
   update(lm: NormalizedLandmark[], ts: number): SmoothedFrame {
     const wrist = lm[0];
-    const raw: Vec3 = { x: wrist.x, y: wrist.y, z: wrist.z ?? 0 };
+    const rawPos: Vec3 = { x: wrist.x, y: wrist.y, z: wrist.z ?? 0 };
 
-    // Initialise or apply EMA
-    if (!this.ema) {
-      this.ema = { ...raw };
+    // 1. Position EMA smoothing: smoothed = old * 0.8 + new * 0.2
+    if (!this.emaPos) {
+      this.emaPos = { ...rawPos };
     } else {
-      const a = EMA_ALPHA;
-      this.ema.x = a * raw.x + (1 - a) * this.ema.x;
-      this.ema.y = a * raw.y + (1 - a) * this.ema.y;
-      this.ema.z = a * raw.z + (1 - a) * this.ema.z;
+      const a = 0.2;
+      this.emaPos.x = this.emaPos.x * (1 - a) + rawPos.x * a;
+      this.emaPos.y = this.emaPos.y * (1 - a) + rawPos.y * a;
+      this.emaPos.z = this.emaPos.z * (1 - a) + rawPos.z * a;
     }
+    const pos = { ...this.emaPos };
 
-    const pos: Vec3 = { ...this.ema };
-    this.history.push({ pos, ts });
-
-    // Discard frames outside the velocity window
-    const cutoff = ts - VEL_WINDOW_MS;
-    while (this.history.length > 1 && this.history[0].ts < cutoff) {
+    // 2. Add to motion trail history (max 15 frames)
+    this.history.push({ ...pos });
+    if (this.history.length > 15) {
       this.history.shift();
     }
 
-    const vel = this.computeVelocity();
-    const speed = Math.sqrt(vel.x ** 2 + vel.y ** 2 + vel.z ** 2);
-    return { pos, vel, speed, ts };
-  }
+    // 3. Compute raw velocity: pos delta / dt
+    const dt = this.lastTs > 0 ? (ts - this.lastTs) / 1000 : 0.016;
+    this.lastTs = ts;
 
-  private computeVelocity(): Vec3 {
-    if (this.history.length < 2) return { x: 0, y: 0, z: 0 };
-    const a = this.history[0];
-    const b = this.history[this.history.length - 1];
-    const dt = (b.ts - a.ts) / 1000; // → seconds
-    if (dt <= 0) return { x: 0, y: 0, z: 0 };
-    return {
-      x: (b.pos.x - a.pos.x) / dt,
-      y: (b.pos.y - a.pos.y) / dt,
-      z: (b.pos.z - a.pos.z) / dt,
-    };
+    const rawVel: Vec3 = { x: 0, y: 0, z: 0 };
+    if (this.history.length >= 2) {
+      const prev = this.history[this.history.length - 2];
+      rawVel.x = (pos.x - prev.x) / (dt || 0.001);
+      rawVel.y = (pos.y - prev.y) / (dt || 0.001);
+      rawVel.z = (pos.z - prev.z) / (dt || 0.001);
+    }
+
+    // 4. Velocity EMA smoothing: smoothed = old * 0.8 + new * 0.2
+    if (!this.emaVel) {
+      this.emaVel = { ...rawVel };
+    } else {
+      const a = 0.2;
+      this.emaVel.x = this.emaVel.x * (1 - a) + rawVel.x * a;
+      this.emaVel.y = this.emaVel.y * (1 - a) + rawVel.y * a;
+      this.emaVel.z = this.emaVel.z * (1 - a) + rawVel.z * a;
+    }
+    const vel = { ...this.emaVel };
+    const speed = Math.sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
+
+    return { pos, vel, speed, ts, trail: [...this.history] };
   }
 
   reset(): void {
     this.history = [];
-    this.ema = null;
+    this.emaPos = null;
+    this.emaVel = null;
+    this.lastTs = 0;
   }
 }

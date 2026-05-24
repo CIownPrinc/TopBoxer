@@ -2,6 +2,10 @@ import type { HandDebugInfo, HandState } from "../game/PunchDetector";
 
 const STATE_COLOR: Record<HandState, string> = {
   idle:     "#555",
+  guard:    "#3b82f6",
+  windup:   "#fbbf24",
+  strike:   "#22c55e",
+  recovery: "#ef4444",
   cocking:  "#fbbf24",
   punching: "#22c55e",
   cooldown: "#ef4444",

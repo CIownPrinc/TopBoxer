@@ -19,6 +19,7 @@ const EMPTY_DEBUG: HandDebugInfo = {
   direction: { x: 0, y: 0, z: 0 },
   stability: 1,
   trackingConfidence: 0,
+  fistConfidence: 0,
 };
 
 function isPunchType(type: GestureCandidate["type"]): type is PunchEvent["type"] {

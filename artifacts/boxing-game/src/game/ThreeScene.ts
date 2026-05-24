@@ -303,7 +303,7 @@ export class ThreeScene {
       target.set(
         baseX + xAdj,
         -0.38 + yAdj,
-        state === "punching" ? PUNCH_Z : state === "cocking" ? COCK_Z : REST_Z,
+        state === "strike" || state === "punching" ? PUNCH_Z : state === "windup" || state === "cocking" ? COCK_Z : REST_Z,
       );
     };
 

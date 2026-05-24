@@ -18,6 +18,7 @@ const EMPTY_DEBUG: HandDebugInfo = {
   state: "idle", speed: 0, vel: { x: 0, y: 0, z: 0 },
   lastGesture: "idle", confidence: 0, blocking: false,
   pos: { x: 0, y: 0, z: 0 }, direction: { x: 0, y: 0, z: 0 }, stability: 1, trackingConfidence: 0,
+  fistConfidence: 0,
 };
 
 // ── Ready-check overlay ────────────────────────────────────────────────────────
