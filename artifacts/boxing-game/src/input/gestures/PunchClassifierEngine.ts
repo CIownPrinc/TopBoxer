@@ -108,7 +108,7 @@ export class PunchClassifierEngine {
 
     // Calculate scale-invariant fistConfidence score from hand structural landmarks
     const rawFistConf = this.calculateFistConfidence(hand.landmarks);
-    const a = 0.25;
+    const a = 0.55;
     this.fistConfidence = this.fistConfidence * (1 - a) + rawFistConf * a;
 
     const vUnit = VecMath.normalize(velocity);
@@ -201,11 +201,11 @@ export class PunchClassifierEngine {
   private calculateFistConfidence(lm: NormalizedLandmark[]): number {
     if (!lm || lm.length < 21) return 0.85; // fallback for tests/mocks
     
+    // Pure 2D scale-invariant distance calculation to completely eliminate depth-estimation noise
     const dist = (i: number, j: number) => {
       const dx = lm[i].x - lm[j].x;
       const dy = lm[i].y - lm[j].y;
-      const dz = (lm[i].z ?? 0) - (lm[j].z ?? 0);
-      return Math.sqrt(dx * dx + dy * dy + dz * dz);
+      return Math.sqrt(dx * dx + dy * dy);
     };
 
     // Reference Scale: Wrist (0) to middle MCP (9) represents hand size
@@ -220,26 +220,28 @@ export class PunchClassifierEngine {
     const spreadRatio = tipSpread / (knuckleWidth || 0.001);
     const spreadScore = Math.max(0, Math.min(1.0, 1.6 - spreadRatio * 0.8));
 
-    // 3. Individual Finger Curl with Min-Curl Penalty
-    const dIndex = dist(8, 5);
+    // 3. Individual Finger Curl (anatomically correct 2D distance to palm center MCP 9)
+    // In a clenched fist, finger tips (8, 12, 16, 20) converge very close to the palm center (9).
+    const dIndex = dist(8, 9);
     const dMiddle = dist(12, 9);
-    const dRing = dist(16, 13);
-    const dPinky = dist(20, 17);
+    const dRing = dist(16, 9);
+    const dPinky = dist(20, 9);
 
-    const indexCurl = Math.max(0, Math.min(1.0, 1.3 - (dIndex / refScale) * 1.2));
-    const middleCurl = Math.max(0, Math.min(1.0, 1.3 - (dMiddle / refScale) * 1.2));
-    const ringCurl = Math.max(0, Math.min(1.0, 1.3 - (dRing / refScale) * 1.2));
-    const pinkyCurl = Math.max(0, Math.min(1.0, 1.3 - (dPinky / refScale) * 1.2));
+    const indexCurl = Math.max(0, Math.min(1.0, 1.8 - (dIndex / refScale) * 1.2));
+    const middleCurl = Math.max(0, Math.min(1.0, 1.8 - (dMiddle / refScale) * 1.2));
+    const ringCurl = Math.max(0, Math.min(1.0, 1.8 - (dRing / refScale) * 1.2));
+    const pinkyCurl = Math.max(0, Math.min(1.0, 1.8 - (dPinky / refScale) * 1.2));
 
     const avgCurl = (indexCurl + middleCurl + ringCurl + pinkyCurl) / 4;
     const minCurl = Math.min(indexCurl, middleCurl, ringCurl, pinkyCurl);
+    // Combines average hand clench with minimum finger curl to penalize peace signs or finger guns
     const curlScore = avgCurl * 0.3 + minCurl * 0.7;
 
     // 4. Knuckle Compression Alignment
     const compressionDist = dist(5, 9) + dist(9, 13) + dist(13, 17);
     const compScore = Math.max(0.3, Math.min(1.0, 1.0 - (compressionDist - refScale * 0.9) / refScale));
 
-    // 5. Thumb Tuck / Alignment
+    // 5. Thumb Tuck / Alignment (thumb tip [4] to index MCP [5] in 2D)
     const dThumb = dist(4, 5);
     const thumbRatio = dThumb / refScale;
     const thumbScore = Math.max(0, Math.min(1.0, 1.3 - thumbRatio * 0.9));
