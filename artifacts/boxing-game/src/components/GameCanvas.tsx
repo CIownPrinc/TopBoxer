@@ -184,6 +184,9 @@ export function GameCanvas() {
     canvas.width  = container.clientWidth;
     canvas.height = container.clientHeight;
     const scene = createScene(canvas);
+    if (engineRef.current) {
+      scene.setGameEngine(engineRef.current);
+    }
     scene.startRendering();
     sceneRef.current = scene;
     const onResize = () => {
@@ -207,6 +210,9 @@ export function GameCanvas() {
   // ── Game engine ───────────────────────────────────────────────────────────
   useEffect(() => {
     const engine = new GameEngine();
+    if (sceneRef.current) {
+      sceneRef.current.setGameEngine(engine);
+    }
     engine.onState(setGameState);
 
     // Subscribe to high-frequency ticks to update the HUD imperatively

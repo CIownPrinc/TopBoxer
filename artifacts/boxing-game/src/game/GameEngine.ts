@@ -137,8 +137,6 @@ export class GameEngine {
   private comboTimer: ReturnType<typeof setTimeout> | null = null;
   private aiPunchTimer: ReturnType<typeof setTimeout> | null = null;
   
-  // High-frequency 60 FPS tick timer
-  private tickTimer: ReturnType<typeof setInterval> | null = null;
   private hitStopEndTs = 0;
 
   private onAIPunchCb: ((hand: "left" | "right") => void) | null = null;
@@ -198,6 +196,10 @@ export class GameEngine {
   }
 
   // ── Public API ──────────────────────────────────────────────────────────────
+  tick(): void {
+    this.engineTick();
+  }
+
   onState(cb: StateListener): void { this.listeners.push(cb); }
   onTick(cb: StateListener): void { this.tickListeners.push(cb); }
   onHit(cb: HitEvent): void { this.hitListeners.push(cb); }
@@ -441,7 +443,6 @@ export class GameEngine {
 
     this.emit();
     this.startRoundTimer();
-    this.startTickTimer(); // Start 60 FPS update loop
     this.scheduleAIPunch();
   }
 
@@ -452,13 +453,6 @@ export class GameEngine {
       if (this.state.timeLeft === 0) this.endRoundByTime();
       else this.emit();
     }, 1000);
-  }
-
-  private startTickTimer(): void {
-    if (this.tickTimer) clearInterval(this.tickTimer);
-    this.tickTimer = setInterval(() => {
-      this.engineTick();
-    }, 16.67);
   }
 
   private engineTick(): void {
@@ -783,7 +777,6 @@ export class GameEngine {
     this.state.phase = "fighting";
     this.emit();
     this.startRoundTimer();
-    this.startTickTimer(); // Resume tick loop!
     this.scheduleAIPunch();
   }
 
@@ -832,7 +825,6 @@ export class GameEngine {
     if (this.eightCountTimer) { clearInterval(this.eightCountTimer); this.eightCountTimer = null; }
     if (this.aiPunchTimer) { clearTimeout(this.aiPunchTimer); this.aiPunchTimer = null; }
     if (this.comboTimer) { clearTimeout(this.comboTimer); this.comboTimer = null; }
-    if (this.tickTimer) { clearInterval(this.tickTimer); this.tickTimer = null; } // Clear 60 FPS loop!
   }
 
   private getTierFromTrophies(trophies: number): CPUStage {

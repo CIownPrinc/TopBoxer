@@ -7,6 +7,7 @@ export class Scene2D {
   private t = 0;
   private dt = 0;
   private lastTime = 0;
+  private gameEngine: any = null;
 
   // Fighter state
   private pState = this.makeFighter();
@@ -49,6 +50,10 @@ export class Scene2D {
     }
   }
 
+  setGameEngine(engine: any): void {
+    this.gameEngine = engine;
+  }
+
   triggerPlayerPunch(hand: "left" | "right"): void { this.pState.punchAnim = { hand, t: 0 }; }
   triggerAIPunch(hand: "left" | "right"): void { this.aState.punchAnim = { hand, t: 0 }; }
   triggerPlayerHit(_force?: number): void { this.pState.hitAnim = 1; }
@@ -80,6 +85,10 @@ export class Scene2D {
   private loop = (): void => {
     if (!this.running) return;
     this.animFrameId = requestAnimationFrame(this.loop);
+
+    if (this.gameEngine) {
+      this.gameEngine.tick();
+    }
     const now = performance.now();
     this.dt = Math.min((now - this.lastTime) / 1000, 0.05);
     this.lastTime = now;

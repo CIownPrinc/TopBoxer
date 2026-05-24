@@ -4,6 +4,7 @@ import { ThreeScene } from "./ThreeScene";
 import { Scene2D } from "./Scene2D";
 
 export interface IScene {
+  setGameEngine(engine: any): void;
   triggerPlayerPunch(hand: "left" | "right"): void;
   triggerAIPunch(hand: "left" | "right"): void;
   triggerPlayerHit(force?: number): void;
@@ -72,6 +73,7 @@ export function createScene(canvas: HTMLCanvasElement): IScene {
 
 /** Safety valve — if both renderers fail, return a scene that does nothing */
 class NoOpScene implements IScene {
+  setGameEngine(_engine: any): void {}
   triggerPlayerPunch(_hand: "left" | "right"): void {}
   triggerAIPunch(_hand: "left" | "right"): void {}
   triggerPlayerHit(_force?: number): void {}

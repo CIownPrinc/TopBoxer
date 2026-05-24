@@ -82,6 +82,7 @@ export class ThreeScene {
   private prevRPos          = new THREE.Vector3();
   private leftTrailOpacity  = 0;
   private rightTrailOpacity = 0;
+  private gameEngine:  any = null;
 
   // Camera-local targets / current positions for FP gloves
   private fpLTarget  = new THREE.Vector3(-0.38, -0.38, -0.82);
@@ -128,6 +129,10 @@ export class ThreeScene {
   private sparkIndex = 0;
 
   // ── Public API ─────────────────────────────────────────────────────────────
+  setGameEngine(engine: any): void {
+    this.gameEngine = engine;
+  }
+
   tryInit(canvas: HTMLCanvasElement): boolean {
     try { this.init(canvas); return true; } catch { return false; }
   }
@@ -835,6 +840,10 @@ export class ThreeScene {
   private renderLoop = (): void => {
     if (!this.running) return;
     this.animFrameId = requestAnimationFrame(this.renderLoop);
+
+    if (this.gameEngine) {
+      this.gameEngine.tick();
+    }
 
     const now      = performance.now();
     const realDelta = Math.min((now - (this.lastRafTime || now)) / 1000, 0.05);
