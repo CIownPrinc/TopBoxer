@@ -13,6 +13,11 @@
 import * as THREE from "three";
 import type { NormalizedLandmark } from "@mediapipe/tasks-vision";
 import type { HandState } from "./PunchDetector";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
+import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 
 type CameraMode = "third-person" | "transitioning" | "first-person";
 
@@ -107,6 +112,14 @@ export class ThreeScene {
   private camTargetRoll = 0;
   private playerDodgeType: string | null = null;
 
+  // Post-processing & Particle System properties
+  private composer!: EffectComposer;
+  private bloomPass!: UnrealBloomPass;
+  private sparkParticles!: THREE.InstancedMesh;
+  private sparkData: Array<{ active: boolean; birth: number; life: number; pos: THREE.Vector3; vel: THREE.Vector3 }> = [];
+  private readonly MAX_SPARKS = 200;
+  private sparkIndex = 0;
+
   // ── Public API ─────────────────────────────────────────────────────────────
   tryInit(canvas: HTMLCanvasElement): boolean {
     try { this.init(canvas); return true; } catch { return false; }
@@ -121,7 +134,7 @@ export class ThreeScene {
     });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type    = THREE.PCFShadowMap;
+    this.renderer.shadowMap.type    = THREE.PCFSoftShadowMap; // Beautiful soft shadows
     this.renderer.setSize(w, h);
 
     this.scene = new THREE.Scene();
@@ -169,6 +182,88 @@ export class ThreeScene {
     this.camera.add(this.fpArms.group);
     this.camera.add(flashMesh);
     this.scene.add(this.camera); // required so camera children render
+
+    // ── Post-processing Pipeline Setup (WebGL 2 HDR) ─────────────────────────
+    const renderTarget = new THREE.WebGLRenderTarget(w, h, {
+      type: THREE.HalfFloatType,
+      format: THREE.RGBAFormat,
+      colorSpace: THREE.SRGBColorSpace,
+    });
+    this.composer = new EffectComposer(this.renderer, renderTarget);
+    
+    // 1. Render Pass
+    const renderPass = new RenderPass(this.scene, this.camera);
+    this.composer.addPass(renderPass);
+
+    // 2. Bloom Pass (glowing ropes, spotlights, hit sparks)
+    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(w, h), 1.35, 0.45, 0.85);
+    this.composer.addPass(this.bloomPass);
+
+    // 3. Custom Vignette & Chromatic Aberration Pass
+    const vignetteShader = {
+      name: "VignetteChromaticShader",
+      uniforms: {
+        tDiffuse: { value: null },
+        uVignetteDarkness: { value: 1.1 },
+        uVignetteOffset: { value: 0.95 },
+        uChromaticAberration: { value: 0.0022 },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D tDiffuse;
+        uniform float uVignetteDarkness;
+        uniform float uVignetteOffset;
+        uniform float uChromaticAberration;
+        varying vec2 vUv;
+        void main() {
+          vec4 cr = texture2D(tDiffuse, vUv + vec2(uChromaticAberration, 0.0));
+          vec4 cg = texture2D(tDiffuse, vUv);
+          vec4 cb = texture2D(tDiffuse, vUv - vec2(uChromaticAberration, 0.0));
+          vec4 color = vec4(cr.r, cg.g, cb.b, cg.a);
+
+          vec2 uv = vUv - 0.5;
+          float d = length(uv);
+          float vignette = smoothstep(uVignetteOffset, uVignetteOffset - uVignetteDarkness, d);
+          color.rgb *= vignette;
+
+          gl_FragColor = color;
+        }
+      `
+    };
+    const gradingPass = new ShaderPass(vignetteShader);
+    this.composer.addPass(gradingPass);
+
+    // 4. Output Pass (ACES Filmic Tone Mapping + sRGB conversion)
+    const outputPass = new OutputPass();
+    this.composer.addPass(outputPass);
+
+    // ── GPU Instanced Spark Particles Setup ───────────────────────────────────
+    const sparkGeo = new THREE.BoxGeometry(0.038, 0.038, 0.038);
+    const sparkMat = new THREE.MeshBasicMaterial({
+      color: 0xffaa00,
+      toneMapped: false, // Bypass tone mapping for neon glow
+    });
+    this.sparkParticles = new THREE.InstancedMesh(sparkGeo, sparkMat, this.MAX_SPARKS);
+    this.sparkParticles.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+
+    const tempMatrix = new THREE.Matrix4().makeTranslation(9999, 9999, 9999);
+    for (let i = 0; i < this.MAX_SPARKS; i++) {
+      this.sparkParticles.setMatrixAt(i, tempMatrix);
+      this.sparkData.push({
+        active: false,
+        birth: 0,
+        life: 0,
+        pos: new THREE.Vector3(),
+        vel: new THREE.Vector3(),
+      });
+    }
+    this.scene.add(this.sparkParticles);
   }
 
   // ── First-person controls ─────────────────────────────────────────────────
@@ -295,6 +390,9 @@ export class ThreeScene {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
+    if (this.composer) {
+      this.composer.setSize(w, h);
+    }
   }
 
   dispose(): void { this.stopRendering(); this.renderer.dispose(); }
@@ -413,9 +511,9 @@ export class ThreeScene {
     const gloveColor = isAI ? 0xcc0000 : 0x0033cc;
     const skinColor  = isAI ? 0xb07040 : 0xc88850;
 
-    const skinM   = new THREE.MeshStandardMaterial({ color: skinColor,  roughness: 0.70, metalness: 0.0  });
+    const skinM   = new THREE.MeshStandardMaterial({ color: skinColor,  roughness: 0.42, metalness: 0.0  }); // Sweaty dynamic skin
     const trunkM  = new THREE.MeshStandardMaterial({ color: trunkColor, roughness: 0.38, metalness: 0.20 });
-    const gloveM  = new THREE.MeshStandardMaterial({ color: gloveColor, roughness: 0.25, metalness: 0.25 });
+    const gloveM  = new THREE.MeshStandardMaterial({ color: gloveColor, roughness: 0.18, metalness: 0.40 }); // Shiny leather gloves
     const shoeM   = new THREE.MeshStandardMaterial({ color: 0x080808,   roughness: 0.88, metalness: 0.08 });
     const helmetM = new THREE.MeshStandardMaterial({
       color: trunkColor, roughness: 0.18, metalness: 0.50, transparent: true, opacity: 0.82,
@@ -520,7 +618,7 @@ export class ThreeScene {
 
     // depthTest:false so gloves always draw in front of the scene
     const gloveMat = new THREE.MeshStandardMaterial({
-      color: 0x0033cc, roughness: 0.22, metalness: 0.30,
+      color: 0x0033cc, roughness: 0.18, metalness: 0.40, // Match premium shiny look
       depthTest: false, depthWrite: false,
     });
     const armMat = new THREE.MeshStandardMaterial({
@@ -547,7 +645,32 @@ export class ThreeScene {
   }
 
   // ── Hit effects ────────────────────────────────────────────────────────────
+  private triggerSparks(pos: THREE.Vector3, count = 28): void {
+    const now = performance.now();
+    for (let i = 0; i < count; i++) {
+      const idx = this.sparkIndex;
+      this.sparkIndex = (this.sparkIndex + 1) % this.MAX_SPARKS;
+
+      const data = this.sparkData[idx];
+      data.active = true;
+      data.birth = now;
+      data.life = 350 + Math.random() * 350; // 350-700ms lifespan
+      data.pos.copy(pos);
+      
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 2.0 + Math.random() * 3.5;
+      const verticalSpeed = 0.5 + Math.random() * 4.5;
+      data.vel.set(
+        Math.cos(angle) * speed,
+        verticalSpeed,
+        Math.sin(angle) * speed
+      );
+    }
+  }
+
   private spawnHit(pos: THREE.Vector3): void {
+    this.triggerSparks(pos);
+
     // Star burst wireframe
     const burst = new THREE.Mesh(
       new THREE.OctahedronGeometry(0.40, 0),
@@ -810,7 +933,48 @@ export class ThreeScene {
     this.camera.updateProjectionMatrix();
     this.scene.rotation.y = THREE.MathUtils.lerp(this.scene.rotation.y, Math.sin(t * 0.3) * 0.01 * refWave, 0.06);
 
+    // GPU Instanced Spark Particles kinematic update
+    {
+      const now = performance.now();
+      const tempMatrix = new THREE.Matrix4();
+      const tempPos = new THREE.Vector3();
+      let needsUpdate = false;
+
+      for (let i = 0; i < this.MAX_SPARKS; i++) {
+        const data = this.sparkData[i];
+        if (!data.active) continue;
+
+        const age = now - data.birth;
+        if (age >= data.life) {
+          data.active = false;
+          tempMatrix.makeTranslation(9999, 9999, 9999);
+          this.sparkParticles.setMatrixAt(i, tempMatrix);
+          needsUpdate = true;
+          continue;
+        }
+
+        const tSecs = age / 1000;
+        tempPos.copy(data.pos).addScaledVector(data.vel, tSecs);
+        tempPos.y -= 0.5 * 9.8 * tSecs * tSecs; // Gravity pull
+
+        const scale = Math.max(0, 1 - age / data.life) * 0.95;
+        tempMatrix.makeScale(scale, scale, scale);
+        tempMatrix.setPosition(tempPos);
+
+        this.sparkParticles.setMatrixAt(i, tempMatrix);
+        needsUpdate = true;
+      }
+
+      if (needsUpdate) {
+        this.sparkParticles.instanceMatrix.needsUpdate = true;
+      }
+    }
+
     this.updateHitEffects();
-    this.renderer.render(this.scene, this.camera);
+    if (this.composer) {
+      this.composer.render();
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
   };
 }
